@@ -119,7 +119,7 @@ let playeriX = {
     'winner':false
   }
 }
-const socket = io('http://193.168.46.22:3111'); // Подключаемся к серверу
+const socket = io('https://193.168.46.22:3111'); // Подключаемся к серверу
 
 // Обработчик событий и т.д.
 socket.on('connect', () => {
@@ -129,7 +129,7 @@ socket.on('connect', () => {
 });
 
 socket.on('joined_success', () => {
-  opponent.innerHTML = `<span style={color:green; font-weight: 700;}>Вы успешно присоединились!</span>`
+  opponent.innerHTML = `<span style="color:green; font-weight: 700;">Вы успешно присоединились!</span>`
 })
 //Пример отправки сообщения
 socket.emit('my event', { my: 'data' });
