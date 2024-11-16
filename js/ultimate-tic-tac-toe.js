@@ -119,7 +119,7 @@ let playeriX = {
     'winner':false
   }
 }
-const socket = io('https://193.168.46.22:3111'); // Подключаемся к серверу
+const socket = io('https://db.timesy.ru:3111'); // Подключаемся к серверу
 
 // Обработчик событий и т.д.
 socket.on('connect', () => {
