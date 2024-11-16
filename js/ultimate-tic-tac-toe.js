@@ -484,31 +484,31 @@ function genData () {
 
 /* Event on Save game Button that callback func with stringify JSON and push variables in localStorage */
 
-saveGameButton.addEventListener('click', () => {
+// saveGameButton.addEventListener('click', () => {
 
-  let data = {};
-  // for (let el of rows){
-  //   data[el.value] = el.textContent;
-  // }
-  data['zero'] = player0;
-  data['iX'] = playeriX;
-  data['moves'] = [playerX, playerO];
-  data['nextField'] = nextField;
-  data['firstMove'] = firstMove;
-  data['score'] = score;
-  data['counter'] = counter;
+//   let data = {};
+//   // for (let el of rows){
+//   //   data[el.value] = el.textContent;
+//   // }
+//   data['zero'] = player0;
+//   data['iX'] = playeriX;
+//   data['moves'] = [playerX, playerO];
+//   data['nextField'] = nextField;
+//   data['firstMove'] = firstMove;
+//   data['score'] = score;
+//   data['counter'] = counter;
 
   
-  let date = new Date;
-  data['date'] = date.toLocaleString();
+//   let date = new Date;
+//   data['date'] = date.toLocaleString();
 
 
 
-  console.log(data);
-  //data['check'] = check.checked;
-  localStorage.setItem('data',JSON.stringify(data))
-  document.querySelector('.saved--game').innerHTML = `Saved game ${data['date']} <div><a onclick="loadGame()">Load saved</a></div> <div><a onclick="removeSaved()">Remove saved</a></div>`;
-})
+//   console.log(data);
+//   //data['check'] = check.checked;
+//   localStorage.setItem('data',JSON.stringify(data))
+//   document.querySelector('.saved--game').innerHTML = `Saved game ${data['date']} <div><a onclick="loadGame()">Load saved</a></div> <div><a onclick="removeSaved()">Remove saved</a></div>`;
+// })
 
 /* Func that load already saved object 'data' from localStorage and pull variables */
 
@@ -672,11 +672,11 @@ function removeSaved() {
 
 /* Event on reset score button with callback func that erase score */
 
-  resetScore.addEventListener('click', () => {
-    score = [0,0];
-    p1.innerHTML = `P1: ${score[0]}`
-    p2.innerHTML = `P2: ${score[1]}`
-  })
+  // resetScore.addEventListener('click', () => {
+  //   score = [0,0];
+  //   p1.innerHTML = `P1: ${score[0]}`
+  //   p2.innerHTML = `P2: ${score[1]}`
+  // })
 
  /* Function that generate gradient colors and set it on game field background */
 
