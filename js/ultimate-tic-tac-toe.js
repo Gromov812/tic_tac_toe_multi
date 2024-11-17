@@ -1,11 +1,25 @@
 'use strict'
 
+
+function closepopup () {
+  console.log(123);
+  
+  informPopup.style.display = 'none';
+  document.getElementById('inform_popup_text').innerHTML = ``
+  overlay.classList.remove('show_overlay');
+  fb.forEach(el => {
+    el.classList.remove('show_overlay');
+  })
+}
+
 /* Variables */
 let newGameButton = document.querySelector('#new--game--button');
 let createRoom = document.getElementById('create_room');
 let connectRoom = document.getElementById('join');
 let opponent = document.getElementById('opponent');
 let overlay = document.getElementById('overlay');
+let fb = document.querySelectorAll('.fb');
+let informPopup = document.getElementById('inform_popup');
 let connectRoomInput = document.getElementById('room_input');
 let saveGameButton = document.querySelector('#save--button');
 let resetScore = document.querySelector('#reset--score');
@@ -19,11 +33,11 @@ let p2 = document.querySelector('#p2');
 let blocks = document.querySelectorAll('.row');
 let cells = document.querySelectorAll('.inner--cell');
 let nextField;
+let opponent_move = false;
 let firstMove = true;
 let [playerX, playerO, counter, winner,score] = [[],[],0,false,[0,0]];
 let winCombs = [[0,1,2],[0,3,6],[0,4,8],[1,4,7],[2,4,6],[2,5,8],[3,4,5],[8,7,6]];
 let isServer = false;
-let awaitOpponent = false;
 let player0 = {
   0:{
     'comb':[],
@@ -129,16 +143,33 @@ socket.on('connect', () => {
 });
 
 socket.on('joined_success', () => {
-  opponent.innerHTML = `<span style="color:green; font-weight: 700;">Вы успешно присоединились!</span>`
+  overlay.classList.add('show_overlay');
+  informPopup.style.display = 'flex';
+  document.getElementById('inform_popup_text').innerHTML = `Вы успешно присоединились!`
+
+  // opponent.innerHTML = `<span style="color:green; font-weight: 700;">Вы успешно присоединились!</span>`
+})
+  document.getElementById('popup_close').addEventListener('click', closepopup)
+
+socket.on('game_disconnetcted', () => {
+
+  
+  overlay.classList.add('show_overlay');
+  informPopup.style.display = 'flex';
+  document.getElementById('inform_popup_text').innerHTML = `Соперник покинул игру.`
+ 
 })
 //Пример отправки сообщения
 socket.emit('my event', { my: 'data' });
 
 socket.on('joined', (data)=>{
     console.log(data);
-    overlay.classList.remove('show_overlay');
     result.innerHTML = 'Ваш ход';
-    opponent.innerHTML = `Противник присоединился! ${data.player}`
+    informPopup.style.display = 'flex';
+    document.getElementById('inform_popup_text').innerHTML = `Противник присоединился!`
+    fb.forEach(el => {
+      el.classList.remove('show_overlay');
+    })
 })
 
 
@@ -154,7 +185,7 @@ socket.on('opponent_move', data => {
   makeMove(data);
 
   container.style.pointerEvents = 'all';
-
+  opponent_move = false;
   // if (isServer) {
   //   result.innerHTML = 'Player X move now';
   // } else {
@@ -168,6 +199,13 @@ createRoom.addEventListener('click', () =>{
   isServer = true;
   opponent.innerHTML = `Комната создана! Ожидание игрока!`
   overlay.classList.add('show_overlay');
+  
+  fb.forEach(el => {
+    el.classList.add('show_overlay');
+  })
+  
+ 
+  
 });
 
 
@@ -180,8 +218,8 @@ connectRoom.addEventListener('click', () => {
   isServer = false;
 
   socket.emit('join_game', id);
-  awaitOpponent = true;
   container.style.pointerEvents = 'none';
+  opponent_move = true;
   // console.log(id);
   
   result.innerHTML = 'Ход соперника';
@@ -238,11 +276,6 @@ let block8 = document.querySelectorAll('[block="8"]');
  /* Call for function gamePlay() when click on any cell */
 cells.forEach(el => {
   el.addEventListener('click', gamePlay);
-  // if (isServer) {
-  //   result.innerHTML = 'Player O move now';
-  // } else {
-  // }
-  // result.innerHTML = 'Player X move now';
 })
 // for (let el of block0) {
 //   el.addEventListener('click', gamePlay);
@@ -332,6 +365,9 @@ function gamePlay() {
   
   let block = document.querySelector(`[type="block"][value="${this.getAttribute('block')}"]`);
   let blockNumber = this.getAttribute('block');
+
+
+  if (!opponent_move) {
 
   /* Check for draw */ 
 
@@ -444,8 +480,9 @@ console.log(+block.getAttribute('value'));
 
   socket.emit('move', data);
   container.style.pointerEvents = 'none';
-  awaitOpponent = true;
+  opponent_move = true;
   result.innerHTML = 'Ход соперника';
+}
 }
 
 function checkForAvaliable () {
@@ -618,7 +655,7 @@ if (nextField != undefined) {
   
   document.querySelector(`[type="block"][value="${nextField}"]`).classList.add('box-shadow');
   container.classList.remove('box-shadow');
-}
+} else container.classList.add('box-shadow');
   }
   for (let el of cells) {
     if (data['iX'][`${el.getAttribute('block')}`]['comb'].length != 0 && data['iX'][`${el.getAttribute('block')}`]['comb'].includes(el.value)) {

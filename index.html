@@ -1,17 +1,21 @@
 <html>
 
   <div id="overlay" style="position: fixed; color: #FFF; font-weight: 700; display: none; flex-direction: column; align-items: center; justify-content: center; width: 100vw; height: 100vh; background: rgba(128, 128, 128, 0.411);">
-    <div class="lds-facebook"><div></div><div></div><div></div></div>
-    <div>Ожидание соперника</div>
+    <div style="display: none;" class="fb lds-facebook"><div></div><div></div><div></div></div>
+    <div class="fb" style="display: none;">Ожидание соперника</div>
   </div>
 <head>
   <script src="https://cdn.socket.io/4.6.0/socket.io.min.js"></script>
 <link rel="stylesheet" href="./css/style.css">
 </head>
         <body>
-
+          
           <div class="content">
           <div class="wrapper">
+            <div style="position: absolute; display: none; flex-direction: column; gap: 15px; justify-content: center; align-items: center; height: 300px; width: 500px; top: 50%; transform: translate(0, -50%); background: #FFF;" id="inform_popup">
+              <div id="inform_popup_text"></div>
+              <button id="popup_close" class="reset--button">Закрыть</button>
+            </div>
             <!-- <div class="switcher"><span id="switchText">P1 move first</span><label class="switch"> 
               <input id="checkbox" type="checkbox" checked>
               <span class="slider round"></span>
