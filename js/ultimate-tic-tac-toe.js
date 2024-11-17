@@ -365,9 +365,10 @@ function gamePlay() {
   
   let block = document.querySelector(`[type="block"][value="${this.getAttribute('block')}"]`);
   let blockNumber = this.getAttribute('block');
+console.log(`this.value`, this.value, `nextField`, nextField, !!nextField);
 
 
-  if (!opponent_move) {
+  if (!opponent_move && blockNumber == nextField || nextField == undefined) {
 
   /* Check for draw */ 
 
