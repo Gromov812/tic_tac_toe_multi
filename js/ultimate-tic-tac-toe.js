@@ -12,6 +12,8 @@ function closepopup () {
   })
 }
 
+const audio = new Audio('./js/necromancerunitattack1.mp3');
+audio.volume = 0.5;
 /* Variables */
 let newGameButton = document.querySelector('#new--game--button');
 let createRoom = document.getElementById('create_room');
@@ -190,6 +192,7 @@ socket.on('opponent_move', data => {
   //   result.innerHTML = 'Player X move now';
   // } else {
   // }
+  audio.play();
   result.innerHTML = 'Ваш ход';
 })
 
