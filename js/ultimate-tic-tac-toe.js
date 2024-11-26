@@ -12,8 +12,13 @@ function closepopup () {
   })
 }
 
-const audio = new Audio('./js/necromancerunitattack1.mp3');
-audio.volume = 0.5;
+const audios = [];
+for (let i = 0; i <= 8 ; i++) {
+  let a = new Audio(`./js/${i}.mp3`);
+  a.volume = 0.5;
+  audios.push(a);
+}
+
 /* Variables */
 let newGameButton = document.querySelector('#new--game--button');
 let createRoom = document.getElementById('create_room');
@@ -136,7 +141,7 @@ let playeriX = {
   }
 }
 const socket = io('https://db.timesy.ru:3111'); // Подключаемся к серверу
-
+let track = 0;
 // Обработчик событий и т.д.
 socket.on('connect', () => {
   console.log('Connected to server!', socket.id);
@@ -192,7 +197,11 @@ socket.on('opponent_move', data => {
   //   result.innerHTML = 'Player X move now';
   // } else {
   // }
-  audio.play();
+  console.log(track);
+  
+  audios[track].play();
+  track += 1;
+  if (track >= 8) track = 1;
   result.innerHTML = 'Ваш ход';
 })
 
