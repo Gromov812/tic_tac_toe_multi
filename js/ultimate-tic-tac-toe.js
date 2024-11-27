@@ -13,7 +13,7 @@ function closepopup () {
 }
 
 const audios = [];
-for (let i = 0; i <= 8 ; i++) {
+for (let i = 0; i <= 3 ; i++) {
   let a = new Audio(`./js/${i}.mp3`);
   a.volume = 0.5;
   audios.push(a);
@@ -141,7 +141,7 @@ let playeriX = {
   }
 }
 const socket = io('https://db.timesy.ru:3111'); // Подключаемся к серверу
-let track = 0;
+let track = 1;
 // Обработчик событий и т.д.
 socket.on('connect', () => {
   console.log('Connected to server!', socket.id);
@@ -197,11 +197,11 @@ socket.on('opponent_move', data => {
   //   result.innerHTML = 'Player X move now';
   // } else {
   // }
-  console.log(track);
+ 
   
   audios[track].play();
   track += 1;
-  if (track >= 8) track = 1;
+  if (track >= 3) track = 0;
   result.innerHTML = 'Ваш ход';
 })
 
