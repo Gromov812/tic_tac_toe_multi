@@ -234,7 +234,7 @@ io.on('connection', socket => {
     user.name = String(profile?.name || 'Игрок').slice(0, 24);
     ratings.set(socket.id, Math.max(800, Number(profile?.rating) || ratings.get(socket.id) || 1200));
     user.externalId = String(profile?.playerId || socket.id).slice(0, 128);
-    ensurePlayer(user.externalId, user.name, ratings.get(socket.id)).then(player => { if (player) user.dbId = player.id; return loadSocialInbox(socket); }).catch(error => console.warn('Could not save player:', error.message));
+    ensurePlayer(user.externalId, user.name, ratings.get(socket.id)).then(player => { if (player) user.dbId = player.id; return Promise.all([loadSocialInbox(socket), broadcastUsers()]); }).catch(error => console.warn('Could not save player:', error.message));
     broadcastUsers();
     broadcastRoom(roomFor(socket.id));
   });
