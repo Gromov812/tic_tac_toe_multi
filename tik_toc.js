@@ -158,7 +158,14 @@ io.on('connection', socket => {
     broadcastRoom(room);
   });
 
-  socket.on('chat message', message => io.to(users.get(socket.id)?.room || socket.id).emit('chat message', String(message).slice(0, 500)));
+  socket.on('chat message', payload => {
+    const user = users.get(socket.id);
+    const room = user?.room;
+    if (!room) return socket.emit('room_error', { message: 'Сначала войдите в комнату.' });
+    const text = String(payload?.text || payload?.message || payload || '').trim().slice(0, 240);
+    if (!text) return;
+    io.to(room).emit('chat message', { id: socket.id, name: user.name || 'Игрок', text, at: Date.now() });
+  });
   socket.on('disconnect', () => { leaveRoom(socket.id); users.delete(socket.id); ratings.delete(socket.id); broadcastUsers(); });
 });
 
