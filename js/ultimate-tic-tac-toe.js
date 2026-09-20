@@ -25,10 +25,10 @@ let aiTimer = null;
 let scores = { X: 0, O: 0 };
 let chatScope = 'room';
 const chatMessages = { room: [], global: [] };
-const sounds = { notice: new Audio('./js/1.mp3'), start: new Audio('./js/3.mp3') };
 const socialInbox = [];
 let onlineUsers = [];
 let onlineTab = 'all';
+let audioContext = null;
 
 function saveProfile() { localStorage.setItem(playerKey, JSON.stringify(profile)); }
 function initials(name) { return (name || 'И').trim().slice(0, 1).toUpperCase(); }
@@ -39,7 +39,9 @@ function paintProfile() {
   const progress = $('#rating-progress'); if (progress) progress.style.width = `${Math.max(8, Math.min(100, ((profile.rating - 800) % 400) / 4))}%`;
 }
 function showToast(message) { const toast = $('#toast'); toast.textContent = message; toast.classList.add('show'); clearTimeout(showToast.timer); showToast.timer = setTimeout(() => toast.classList.remove('show'), 2600); }
-function playSound(name) { const sound = sounds[name]; if (!sound) return; sound.currentTime = 0; sound.play().catch(() => {}); }
+function getAudioContext() { const AudioContext = globalThis.AudioContext || globalThis.webkitAudioContext; if (!AudioContext) return null; if (!audioContext) audioContext = new AudioContext(); if (audioContext.state === 'suspended') audioContext.resume().catch(() => {}); return audioContext; }
+function tone(context, frequency, duration, offset, type = 'sine', volume = 0.045) { const oscillator = context.createOscillator(); const gain = context.createGain(); const start = context.currentTime + offset; oscillator.type = type; oscillator.frequency.setValueAtTime(frequency, start); gain.gain.setValueAtTime(0.0001, start); gain.gain.exponentialRampToValueAtTime(volume, start + 0.015); gain.gain.exponentialRampToValueAtTime(0.0001, start + duration); oscillator.connect(gain); gain.connect(context.destination); oscillator.start(start); oscillator.stop(start + duration + 0.02); }
+function playSound(name) { const context = getAudioContext(); if (!context) return; const themes = { 'move-x': [[523.25, 0.09, 0]], 'move-o': [[392, 0.1, 0]], notice: [[659.25, 0.11, 0], [987.77, 0.16, 0.1]], start: [[261.63, 0.16, 0], [329.63, 0.16, 0.12], [392, 0.16, 0.24], [523.25, 0.28, 0.36]], win: [[523.25, 0.15, 0], [659.25, 0.15, 0.12], [783.99, 0.15, 0.24], [1046.5, 0.42, 0.36]], loss: [[329.63, 0.18, 0], [293.66, 0.18, 0.15], [220, 0.42, 0.3]], draw: [[440, 0.18, 0], [523.25, 0.32, 0.18]] }; (themes[name] || []).forEach(([frequency, duration, offset]) => tone(context, frequency, duration, offset, name === 'notice' ? 'triangle' : 'sine', name === 'start' || name === 'win' ? 0.055 : 0.045)); }
 function setConnection(connected, label = connected ? 'Сервер подключен' : 'Офлайн режим') { socketConnected = connected; $('#connection-dot').classList.toggle('online', connected); $('#connection-label').textContent = label; }
 function setMode(nextMode) {
   mode = nextMode;
@@ -98,7 +100,7 @@ function finishGame(winner) {
 function makeMove(boardIndex, cellIndex, remote = false) {
   if (gameOver || boards[boardIndex][cellIndex] || boardWinners[boardIndex] || (currentBoard !== null && currentBoard !== boardIndex)) return;
   if (!remote && ((mode === 'ai' && turn === 'O') || (mode === 'online' && turn !== playerSide))) return;
-  history.push(snapshot()); boards[boardIndex][cellIndex] = turn;
+  history.push(snapshot()); const playedSymbol = turn; boards[boardIndex][cellIndex] = turn; playSound(playedSymbol === 'X' ? 'move-x' : 'move-o');
   updateBoardWinner(boardIndex);
   const globalWinner = hasPlayerWon(boardWinners, turn);
   if (globalWinner || availableBoards().length === 0) { finishGame(globalWinner ? turn : null); } else { currentBoard = chooseNextBoard(cellIndex); turn = turn === 'X' ? 'O' : 'X'; render(); }
@@ -108,6 +110,7 @@ function makeMove(boardIndex, cellIndex, remote = false) {
 function resultRating(won) { const delta = mode === 'online' ? (won === null ? 3 : won ? 24 : -18) : (won === null ? 0 : won ? 8 : -4); profile.rating = Math.max(800, profile.rating + delta); saveProfile(); paintProfile(); $('#rating-value').textContent = profile.rating; $('.trend').textContent = `${delta > 0 ? '+' : ''}${delta}`; return delta; }
 function showResult(winner) {
   const dialog = $('#result-dialog'); const won = winner === playerSide; const draw = !winner;
+  playSound(draw ? 'draw' : won ? 'win' : 'loss');
   dialog.className = `result-dialog ${draw ? 'draw' : won ? '' : 'loss'}`;
   $('#result-symbol').textContent = draw ? '—' : won ? 'X' : 'O';
   $('#result-kicker').textContent = draw ? 'MATCH DRAW' : won ? 'VICTORY' : 'MATCH LOST';
@@ -203,7 +206,7 @@ function setupSocket() {
   socket.on('connect_error', () => setConnection(false));
   socket.on('joined_success', () => { $('#room-status').textContent = 'Вы присоединились к комнате'; socket.emit('chat_history', { scope: 'room' }); showToast('Вы в комнате'); });
   socket.on('joined', () => { $('#opponent-name').textContent = 'Соперник'; $('#opponent-status').textContent = 'Подключен и готовится'; $('#opponent-ready').textContent = 'Готов'; $('#opponent-ready').classList.add('ready'); $('#player-count').textContent = '2 / 2'; $('#online-count').textContent = '2'; render(); showToast('Соперник присоединился'); });
-  socket.on('opponent_move', data => { applyLegacy(data); });
+  socket.on('opponent_move', data => { let state; try { state = typeof data === 'string' ? JSON.parse(data) : data; } catch { state = null; } playSound(state?.counter % 2 ? 'move-x' : 'move-o'); applyLegacy(data); });
   ['users', 'online_users', 'server_users', 'players'].forEach(eventName => socket.on(eventName, updateOnlineUsers));
   socket.on('room_created', data => { roomCode = data.code; $('#room-code').textContent = roomCode; if (data.auto) { mode = 'online'; playerSide = 'X'; setMode(mode); $('#room-status').textContent = 'Комната создана для приглашения'; } });
   socket.on('room_error', data => showToast(data.message || 'Не удалось войти в комнату'));
