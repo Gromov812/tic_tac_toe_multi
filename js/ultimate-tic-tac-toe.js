@@ -108,7 +108,7 @@ function makeMove(boardIndex, cellIndex, remote = false) {
   if (mode === 'ai' && turn === 'O' && !gameOver) { clearTimeout(aiTimer); aiTimer = setTimeout(aiMove, difficulty === 'easy' ? 350 : 600); }
 }
 function resultRating(won) { const delta = mode === 'online' ? (won === null ? 3 : won ? 24 : -18) : (won === null ? 0 : won ? 8 : -4); profile.rating = Math.max(800, profile.rating + delta); saveProfile(); paintProfile(); $('#rating-value').textContent = profile.rating; $('.trend').textContent = `${delta > 0 ? '+' : ''}${delta}`; return delta; }
-function showResult(winner) {
+function showResult(winner, ratingDelta = null) {
   const dialog = $('#result-dialog'); const won = winner === playerSide; const draw = !winner;
   playSound(draw ? 'draw' : won ? 'win' : 'loss');
   dialog.className = `result-dialog ${draw ? 'draw' : won ? '' : 'loss'}`;
@@ -116,7 +116,7 @@ function showResult(winner) {
   $('#result-kicker').textContent = draw ? 'MATCH DRAW' : won ? 'VICTORY' : 'MATCH LOST';
   $('#result-title').textContent = draw ? 'Ничья' : won ? 'Победа' : 'Поражение';
   $('#result-message').textContent = draw ? 'Оба игрока дошли до предела поля.' : won ? 'Вы забрали большую линию. Отличная партия.' : 'Соперник собрал линию первым. Реванш рядом.';
-  const delta = mode === 'online' ? (draw ? 3 : won ? 24 : -18) : (draw ? 0 : won ? 8 : -4);
+  const delta = ratingDelta ?? (mode === 'online' ? (draw ? 3 : won ? 24 : -18) : (draw ? 0 : won ? 8 : -4));
   $('#result-rating').textContent = `${delta > 0 ? '+' : ''}${delta} рейтинга`;
   dialog.showModal();
 }
@@ -164,14 +164,17 @@ function renderOnlineUsers() {
   list.innerHTML = visibleUsers.map(user => {
     const name = typeof user === 'string' ? user : (user.name || user.id || 'Игрок');
     const rating = typeof user === 'object' && user.rating ? user.rating : '—';
-    const readyLabel = typeof user === 'object' && user.ready ? 'Готов играть' : 'В лобби';
+    const readyLabel = typeof user === 'object' && (user.inGame || user.room && user.roomPlayers >= 2) ? 'Сейчас играет' : typeof user === 'object' && user.ready ? 'Готов играть' : 'В лобби';
     const id = typeof user === 'object' ? user.id : '';
     const self = user.isSelf || socket?.id === id;
     const status = self ? '<span class="self-mark">(Я)</span>' : user.isFriend ? '<small class="friend-status">В друзьях</small>' : '';
     const friendAction = user.isFriend ? 'friend-remove' : 'friend';
     const friendLabel = user.isFriend ? 'Убрать из друзей' : user.friendStatus === 'pending' ? 'Заявка отправлена' : 'В друзья';
     const friendButton = self ? '' : `<button type="button" class="user-action" data-social="${friendAction}" data-user-id="${escapeHtml(id)}" ${user.friendStatus === 'pending' ? 'disabled' : ''}>${friendLabel}</button>`;
-    const actions = self ? '' : `<span class="user-actions">${friendButton}<button type="button" class="user-action" data-social="invite" data-user-id="${escapeHtml(id)}" title="Пригласить в игру">Играть</button></span>`;
+    const busy = user.inGame || user.roomPlayers >= 2;
+    const playDisabled = busy ? 'disabled' : '';
+    const playLabel = busy ? 'Сейчас играет' : 'Играть';
+    const actions = self ? '' : `<span class="user-actions">${friendButton}<button type="button" class="user-action" data-social="invite" data-user-id="${escapeHtml(id)}" title="Пригласить в игру" ${playDisabled}>${playLabel}</button></span>`;
     return `<div class="compact-user"><span class="avatar avatar-x">${escapeHtml(initials(name))}</span><span class="user-info"><b>${escapeHtml(name)}${status}</b><small>${readyLabel}</small></span><span class="user-rating">${escapeHtml(rating)}</span>${actions}</div>`;
   }).join('');
 }
@@ -213,7 +216,7 @@ function setupSocket() {
   socket.on('rating_update', data => { profile.rating = data.rating; saveProfile(); paintProfile(); });
   socket.on('chat message', addChatMessage);
   socket.on('chat_history', data => { if (!data?.scope || !Array.isArray(data.messages)) return; chatMessages[data.scope] = data.messages.slice(-20); if (data.scope === chatScope) renderChat(); });
-  socket.on('match_result', data => { if (gameOver) return; gameOver = true; showResult(data.winner === 'draw' ? null : data.winner); render(); });
+  socket.on('match_result', data => { if (gameOver) return; gameOver = true; showResult(data.winner === 'draw' ? null : data.winner, data.ratingDelta ?? null); render(); });
   socket.on('social_notice', data => showToast(data.message));
   socket.on('social_error', data => showToast(data.message || 'Действие недоступно'));
   socket.on('social_inbox', data => { (data?.items || []).forEach(item => socialInbox.push(item)); renderSocialInbox(); if (data?.items?.length) playSound('notice'); });
@@ -223,6 +226,7 @@ function setupSocket() {
   socket.on('game_invite_accepted', data => { mode = 'online'; playerSide = 'O'; roomCode = data.room; setMode(mode); $('#room-code').textContent = roomCode; $('#room-status').textContent = 'Соперник принял приглашение'; render(); });
   socket.on('room_state', data => { if (data.code) { roomCode = data.code; $('#room-code').textContent = data.code; } if (data.players?.length) { $('#player-count').textContent = `${data.players.length} / 2`; const opponent = data.players.find(player => player.id !== socket.id); if (opponent) { $('#opponent-name').textContent = opponent.name; $('#opponent-status').textContent = opponent.ready ? 'Готов играть' : 'В лобби'; $('#opponent-ready').textContent = opponent.ready ? 'Готов' : 'Не готов'; } } });
   socket.on('match_started', data => { if (data.side) playerSide = data.side; turn = 'X'; $('#room-status').textContent = 'Оба игрока готовы. Игра началась'; $('#turn-bar').classList.add('match-started'); setTimeout(() => $('#turn-bar').classList.remove('match-started'), 900); playSound('start'); showToast('Новая игра началась'); render(); });
+  socket.on('game_opponent_left', () => { $('#claim-win').disabled = false; $('#claim-draw').disabled = false; $('#opponent-left-dialog').showModal(); showToast('Соперник вышел из игры'); });
   const disconnected = () => { $('#opponent-name').textContent = 'Ожидание соперника'; $('#opponent-status').textContent = 'Соперник вышел из комнаты'; $('#player-count').textContent = '1 / 2'; $('#online-count').textContent = '1'; showToast('Соперник покинул игру'); };
   socket.on('game_disconnected', disconnected); socket.on('game_disconnetcted', disconnected);
 }
@@ -241,6 +245,9 @@ $('#profile-button').addEventListener('click', () => { $('#name-input').value = 
 $('#save-profile').addEventListener('click', () => { const name = $('#name-input').value.trim(); if (name) profile.name = name; saveProfile(); paintProfile(); if (socket) socket.emit('profile_update', profile); showToast('Профиль обновлён'); });
 $('#help-button').addEventListener('click', () => $('#help-dialog').showModal());
 $('#result-new-game').addEventListener('click', newGame);
+function resolveOpponentExit(result) { const dialog = $('#opponent-left-dialog'); $('#claim-win').disabled = true; $('#claim-draw').disabled = true; if (socket) socket.emit('abandoned_result', { result }); dialog.close(); }
+$('#claim-win').addEventListener('click', () => resolveOpponentExit('win'));
+$('#claim-draw').addEventListener('click', () => resolveOpponentExit('draw'));
 function setChatScope(scope) { chatScope = scope; $('#chat-room-scope').classList.toggle('selected', scope === 'room'); $('#chat-global-scope').classList.toggle('selected', scope === 'global'); $('#chat-status').textContent = scope === 'room' ? 'Только для участников комнаты' : 'Все игроки на сервере'; renderChat(); if (socket) socket.emit('chat_history', { scope }); }
 $('#chat-room-scope').addEventListener('click', () => setChatScope('room'));
 $('#chat-global-scope').addEventListener('click', () => setChatScope('global'));
