@@ -27,6 +27,8 @@ let chatScope = 'room';
 const chatMessages = { room: [], global: [] };
 const sounds = { notice: new Audio('./js/1.mp3'), start: new Audio('./js/3.mp3') };
 const socialInbox = [];
+let onlineUsers = [];
+let onlineTab = 'all';
 
 function saveProfile() { localStorage.setItem(playerKey, JSON.stringify(profile)); }
 function initials(name) { return (name || 'И').trim().slice(0, 1).toUpperCase(); }
@@ -143,17 +145,32 @@ function applyLegacy(raw) {
   currentBoard = data.nextField ?? null; scores = { X: data.score?.[0] || 0, O: data.score?.[1] || 0 }; turn = data.counter % 2 ? 'O' : 'X'; render();
 }
 function updateOnlineUsers(users) {
-  if (!Array.isArray(users) || !users.length) return;
+  const payload = Array.isArray(users) ? { users } : users;
+  if (!Array.isArray(payload?.users)) return;
+  onlineUsers = payload.users;
+  renderOnlineUsers();
+}
+function renderOnlineUsers() {
   const list = $('#online-users');
-  list.innerHTML = users.map(user => {
+  const friends = onlineUsers.filter(user => user.isFriend);
+  const visibleUsers = onlineTab === 'friends' ? onlineUsers.filter(user => user.isSelf || user.isFriend) : onlineUsers;
+  $('#online-count').textContent = onlineUsers.length;
+  $('#online-tab-count').textContent = onlineUsers.length;
+  $('#friends-tab-count').textContent = friends.length;
+  if (!visibleUsers.length) { list.innerHTML = '<p class="friends-empty">Пока нет друзей онлайн</p>'; return; }
+  list.innerHTML = visibleUsers.map(user => {
     const name = typeof user === 'string' ? user : (user.name || user.id || 'Игрок');
     const rating = typeof user === 'object' && user.rating ? user.rating : '—';
     const readyLabel = typeof user === 'object' && user.ready ? 'Готов играть' : 'В лобби';
     const id = typeof user === 'object' ? user.id : '';
-    const actions = id && socket?.id !== id ? `<span class="user-actions"><button type="button" class="user-action" data-social="friend" data-user-id="${escapeHtml(id)}" title="Добавить в друзья">В друзья</button><button type="button" class="user-action" data-social="invite" data-user-id="${escapeHtml(id)}" title="Пригласить в игру">Играть</button></span>` : '';
-    return `<div class="compact-user"><span class="avatar avatar-x">${escapeHtml(initials(name))}</span><span class="user-info"><b>${escapeHtml(name)}</b><small>${readyLabel}</small></span><span class="user-rating">${escapeHtml(rating)}</span>${actions}</div>`;
+    const self = user.isSelf || socket?.id === id;
+    const status = self ? '<span class="self-mark">(Я)</span>' : user.isFriend ? '<small class="friend-status">В друзьях</small>' : '';
+    const friendAction = user.isFriend ? 'friend-remove' : 'friend';
+    const friendLabel = user.isFriend ? 'Убрать из друзей' : user.friendStatus === 'pending' ? 'Заявка отправлена' : 'В друзья';
+    const friendButton = self ? '' : `<button type="button" class="user-action" data-social="${friendAction}" data-user-id="${escapeHtml(id)}" ${user.friendStatus === 'pending' ? 'disabled' : ''}>${friendLabel}</button>`;
+    const actions = self ? '' : `<span class="user-actions">${friendButton}<button type="button" class="user-action" data-social="invite" data-user-id="${escapeHtml(id)}" title="Пригласить в игру">Играть</button></span>`;
+    return `<div class="compact-user"><span class="avatar avatar-x">${escapeHtml(initials(name))}</span><span class="user-info"><b>${escapeHtml(name)}${status}</b><small>${readyLabel}</small></span><span class="user-rating">${escapeHtml(rating)}</span>${actions}</div>`;
   }).join('');
-  $('#online-count').textContent = users.length;
 }
 function addChatMessage(payload) {
   const message = typeof payload === 'string' ? { name: 'Игрок', text: payload } : payload;
@@ -224,7 +241,9 @@ function setChatScope(scope) { chatScope = scope; $('#chat-room-scope').classLis
 $('#chat-room-scope').addEventListener('click', () => setChatScope('room'));
 $('#chat-global-scope').addEventListener('click', () => setChatScope('global'));
 $('#chat-form').addEventListener('submit', event => { event.preventDefault(); const input = $('#chat-input'); const text = input.value.trim(); if (!text) return; if (!socket || !socketConnected) return showToast('Чат доступен после подключения к серверу'); socket.emit('chat message', { scope: chatScope, text }); input.value = ''; });
-$('#online-users').addEventListener('click', event => { const button = event.target.closest('[data-social]'); if (!button || !socket) return; socket.emit(button.dataset.social === 'friend' ? 'friend_request' : 'game_invite', button.dataset.userId); });
+$('#online-users').addEventListener('click', event => { const button = event.target.closest('[data-social]'); if (!button || !socket || button.disabled) return; const events = { friend: 'friend_request', 'friend-remove': 'friend_remove', invite: 'game_invite' }; socket.emit(events[button.dataset.social], button.dataset.userId); });
+$('#online-tab').addEventListener('click', () => { onlineTab = 'all'; $('#online-tab').classList.add('selected'); $('#friends-tab').classList.remove('selected'); $('#online-tab').setAttribute('aria-selected', 'true'); $('#friends-tab').setAttribute('aria-selected', 'false'); renderOnlineUsers(); });
+$('#friends-tab').addEventListener('click', () => { onlineTab = 'friends'; $('#friends-tab').classList.add('selected'); $('#online-tab').classList.remove('selected'); $('#friends-tab').setAttribute('aria-selected', 'true'); $('#online-tab').setAttribute('aria-selected', 'false'); renderOnlineUsers(); });
 $('#social-inbox').addEventListener('click', event => { const button = event.target.closest('[data-inbox-action]'); if (!button) return; const index = Number(button.dataset.inboxIndex); const item = socialInbox[index]; if (!item) return; if (button.dataset.inboxAction === 'accept') { if (item.type === 'friend') socket.emit('friend_request_accept', item.from.id); else socket.emit('game_invite_accept', item.room); } else if (item.type === 'friend') socket.emit('friend_request_decline', item.from.id); else socket.emit('game_invite_decline', item.room); socialInbox.splice(index, 1); renderSocialInbox(); });
 
 paintProfile(); setMode('ai'); render(); setupSocket();
