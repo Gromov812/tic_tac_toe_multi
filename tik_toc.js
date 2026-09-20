@@ -55,6 +55,28 @@ async function saveChatMessage(user, scope, roomCode, text) {
   await db.execute('INSERT INTO chat_messages (player_id, scope, room_code, message) VALUES (?, ?, ?, ?)', [user.dbId, scope, scope === 'room' ? roomCode : null, text]);
 }
 
+async function sendChatHistory(socket, scope, roomCode) {
+  if (!db) return socket.emit('chat_history', { scope, room: roomCode || null, messages: [] });
+  const [rows] = scope === 'global'
+    ? await db.execute(`SELECT c.message AS text, c.scope, c.created_at AS at, p.display_name AS name FROM chat_messages c JOIN players p ON p.id = c.player_id WHERE c.scope = 'global' ORDER BY c.created_at DESC LIMIT 20`)
+    : await db.execute(`SELECT c.message AS text, c.scope, c.room_code AS room, c.created_at AS at, p.display_name AS name FROM chat_messages c JOIN players p ON p.id = c.player_id WHERE c.scope = 'room' AND c.room_code = ? ORDER BY c.created_at DESC LIMIT 20`, [roomCode || '']);
+  socket.emit('chat_history', { scope, room: roomCode || null, messages: rows.reverse().map(row => ({ ...row, at: new Date(row.at).getTime() })) });
+}
+
+async function createFriendRequest(fromUser, targetSocketId) {
+  const target = users.get(targetSocketId);
+  if (!db || !fromUser?.dbId || !target?.dbId || targetSocketId === fromUser.socketId) return false;
+  await db.execute('INSERT INTO friendships (requester_id, addressee_id) VALUES (?, ?) ON DUPLICATE KEY UPDATE status = IF(status = \'declined\', \'pending\', status)', [fromUser.dbId, target.dbId]);
+  return true;
+}
+
+async function createGameInvite(fromUser, targetSocketId, roomCode) {
+  const target = users.get(targetSocketId);
+  if (!db || !fromUser?.dbId || !target?.dbId || !roomCode) return false;
+  await db.execute('INSERT INTO game_invites (sender_id, recipient_id, room_code) VALUES (?, ?, ?)', [fromUser.dbId, target.dbId, roomCode]);
+  return true;
+}
+
 function makeRoomCode() {
   let code;
   do code = Math.random().toString(36).slice(2, 8).toUpperCase(); while (rooms.has(code));
@@ -158,7 +180,7 @@ function joinRoom(socket, code) {
 }
 
 io.on('connection', socket => {
-  users.set(socket.id, { name: 'Игрок', room: null, ready: false });
+  users.set(socket.id, { socketId: socket.id, name: 'Игрок', room: null, ready: false });
   ratings.set(socket.id, 1200);
   socket.emit('connected_info', { id: socket.id });
   broadcastUsers();
@@ -237,6 +259,23 @@ io.on('connection', socket => {
     if (scope === 'global') io.emit('chat message', message);
     else io.to(room).emit('chat message', message);
     saveChatMessage(user, scope, room, text).catch(error => console.warn('Could not save chat message:', error.message));
+  });
+  socket.on('chat_history', payload => {
+    const scope = payload?.scope === 'global' ? 'global' : 'room';
+    const room = users.get(socket.id)?.room;
+    if (scope === 'room' && !room) return socket.emit('chat_history', { scope, room: null, messages: [] });
+    sendChatHistory(socket, scope, room).catch(error => console.warn('Could not load chat history:', error.message));
+  });
+  socket.on('friend_request', async targetSocketId => {
+    const user = users.get(socket.id); const target = users.get(String(targetSocketId));
+    if (!user || !target) return socket.emit('social_error', { message: 'Игрок больше не в сети.' });
+    try { if (!await createFriendRequest(user, String(targetSocketId))) throw new Error('База данных недоступна.'); io.to(String(targetSocketId)).emit('friend_request_received', { from: publicUser(socket.id) }); socket.emit('social_notice', { message: `Заявка отправлена игроку ${target.name}.` }); } catch (error) { socket.emit('social_error', { message: error.message }); }
+  });
+  socket.on('game_invite', async targetSocketId => {
+    const user = users.get(socket.id); const target = users.get(String(targetSocketId));
+    if (!user?.room) return socket.emit('social_error', { message: 'Сначала создайте комнату.' });
+    if (!target) return socket.emit('social_error', { message: 'Игрок больше не в сети.' });
+    try { if (!await createGameInvite(user, String(targetSocketId), user.room)) throw new Error('База данных недоступна.'); io.to(String(targetSocketId)).emit('game_invite_received', { from: publicUser(socket.id), room: user.room }); socket.emit('social_notice', { message: `Приглашение отправлено игроку ${target.name}.` }); } catch (error) { socket.emit('social_error', { message: error.message }); }
   });
   socket.on('disconnect', () => { leaveRoom(socket.id); users.delete(socket.id); ratings.delete(socket.id); broadcastUsers(); });
 });

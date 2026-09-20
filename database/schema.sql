@@ -58,3 +58,31 @@ CREATE TABLE IF NOT EXISTS chat_messages (
   KEY idx_chat_room_created (room_code, created_at),
   CONSTRAINT fk_chat_player FOREIGN KEY (player_id) REFERENCES players(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS friendships (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  requester_id BIGINT UNSIGNED NOT NULL,
+  addressee_id BIGINT UNSIGNED NOT NULL,
+  status ENUM('pending', 'accepted', 'declined') NOT NULL DEFAULT 'pending',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_friendship_pair (requester_id, addressee_id),
+  KEY idx_friendship_addressee (addressee_id, status),
+  CONSTRAINT fk_friendship_requester FOREIGN KEY (requester_id) REFERENCES players(id) ON DELETE CASCADE,
+  CONSTRAINT fk_friendship_addressee FOREIGN KEY (addressee_id) REFERENCES players(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS game_invites (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  sender_id BIGINT UNSIGNED NOT NULL,
+  recipient_id BIGINT UNSIGNED NOT NULL,
+  room_code VARCHAR(12) NOT NULL,
+  status ENUM('pending', 'accepted', 'declined', 'expired') NOT NULL DEFAULT 'pending',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  responded_at DATETIME NULL,
+  PRIMARY KEY (id),
+  KEY idx_invites_recipient (recipient_id, status, created_at),
+  CONSTRAINT fk_invite_sender FOREIGN KEY (sender_id) REFERENCES players(id) ON DELETE CASCADE,
+  CONSTRAINT fk_invite_recipient FOREIGN KEY (recipient_id) REFERENCES players(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
