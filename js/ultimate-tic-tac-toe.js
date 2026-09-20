@@ -1,742 +1,189 @@
-'use strict'
+'use strict';
 
+const $ = (selector) => document.querySelector(selector);
+const boardEl = $('#board');
+const wins = [[0,1,2],[3,4,5],[6,7,8],[0,3,6],[1,4,7],[2,5,8],[0,4,8],[2,4,6]];
+const emptyBoards = () => Array.from({ length: 9 }, () => Array(9).fill(null));
+const playerKey = 'gridbound-profile';
 
-function closepopup () {
-  console.log(123);
-  
-  informPopup.style.display = 'none';
-  document.getElementById('inform_popup_text').innerHTML = ``
-  overlay.classList.remove('show_overlay');
-  fb.forEach(el => {
-    el.classList.remove('show_overlay');
-  })
+let profile = JSON.parse(localStorage.getItem(playerKey) || '{"name":"Игрок","rating":1200}');
+let boards = emptyBoards();
+let boardWinners = Array(9).fill(null);
+let currentBoard = null;
+let turn = 'X';
+let gameOver = false;
+let mode = 'ai';
+let difficulty = 'medium';
+let playerSide = 'X';
+let roomCode = '';
+let ready = true;
+let history = [];
+let socket = null;
+let socketConnected = false;
+let aiTimer = null;
+let scores = { X: 0, O: 0 };
+
+function saveProfile() { localStorage.setItem(playerKey, JSON.stringify(profile)); }
+function initials(name) { return (name || 'И').trim().slice(0, 1).toUpperCase(); }
+function paintProfile() {
+  const first = initials(profile.name);
+  $('#profile-name').textContent = profile.name;
+  $('#online-name').textContent = profile.name;
+  $('#online-user-name').textContent = profile.name;
+  $('#profile-avatar').textContent = first;
+  $('#online-avatar').textContent = first;
+  $('#rating-value').textContent = profile.rating;
+  $('#profile-rating').textContent = `${profile.rating} рейтинга`;
+  $('#online-users .user-rating').textContent = profile.rating;
+  $('#rating-progress').style.width = `${Math.max(8, Math.min(100, ((profile.rating - 800) % 400) / 4))}%`;
 }
-
-const audios = [];
-for (let i = 0; i <= 3 ; i++) {
-  let a = new Audio(`./js/${i}.mp3`);
-  a.volume = 0.5;
-  audios.push(a);
+function showToast(message) { const toast = $('#toast'); toast.textContent = message; toast.classList.add('show'); clearTimeout(showToast.timer); showToast.timer = setTimeout(() => toast.classList.remove('show'), 2600); }
+function setConnection(connected, label = connected ? 'Сервер подключен' : 'Офлайн режим') { socketConnected = connected; $('#connection-dot').classList.toggle('online', connected); $('#connection-label').textContent = label; }
+function setMode(nextMode) {
+  mode = nextMode;
+  $('#mode-label').textContent = mode === 'online' ? 'ONLINE MATCH' : 'PRACTICE MATCH';
+  $('#score-o-name').textContent = mode === 'online' ? 'Соперник' : 'Компьютер';
 }
-
-/* Variables */
-let newGameButton = document.querySelector('#new--game--button');
-let createRoom = document.getElementById('create_room');
-let connectRoom = document.getElementById('join');
-let opponent = document.getElementById('opponent');
-let overlay = document.getElementById('overlay');
-let fb = document.querySelectorAll('.fb');
-let informPopup = document.getElementById('inform_popup');
-let connectRoomInput = document.getElementById('room_input');
-let saveGameButton = document.querySelector('#save--button');
-let resetScore = document.querySelector('#reset--score');
-let switchText = document.querySelector('#switchText');
-let container = document.querySelector('.container');
-let rows = document.querySelectorAll('.active');
-let check = document.querySelector('#checkbox');
-let result = document.querySelector('#winner');
-let p1 = document.querySelector('#p1');
-let p2 = document.querySelector('#p2');
-let blocks = document.querySelectorAll('.row');
-let cells = document.querySelectorAll('.inner--cell');
-let nextField;
-let opponent_move = false;
-let firstMove = true;
-let [playerX, playerO, counter, winner,score] = [[],[],0,false,[0,0]];
-let winCombs = [[0,1,2],[0,3,6],[0,4,8],[1,4,7],[2,4,6],[2,5,8],[3,4,5],[8,7,6]];
-let isServer = false;
-let player0 = {
-  0:{
-    'comb':[],
-    'counter':0,
-    'winner':false
-  },
-  1:{
-    'comb':[],
-    'counter':0,
-    'winner':false
-  },
-  2:{
-    'comb':[],
-    'counter':0,
-    'winner':false
-  },
-  3:{
-    'comb':[],
-    'counter':0,
-    'winner':false
-  },
-  4:{
-    'comb':[],
-    'counter':0,
-    'winner':false
-  },
-  5:{
-    'comb':[],
-    'counter':0,
-    'winner':false
-  },
-  6:{
-    'comb':[],
-    'counter':0,
-    'winner':false
-  },
-  7:{
-    'comb':[],
-    'counter':0,
-    'winner':false
-  },
-  8:{
-    'comb':[],
-    'counter':0,
-    'winner':false
-  }
-}
-
-let playeriX = {
-  0:{
-    'comb':[],
-    'counter':0,
-    'winner':false
-  },
-  1:{
-    'comb':[],
-    'counter':0,
-    'winner':false
-  },
-  2:{
-    'comb':[],
-    'counter':0,
-    'winner':false
-  },
-  3:{
-    'comb':[],
-    'counter':0,
-    'winner':false
-  },
-  4:{
-    'comb':[],
-    'counter':0,
-    'winner':false
-  },
-  5:{
-    'comb':[],
-    'counter':0,
-    'winner':false
-  },
-  6:{
-    'comb':[],
-    'counter':0,
-    'winner':false
-  },
-  7:{
-    'comb':[],
-    'counter':0,
-    'winner':false
-  },
-  8:{
-    'comb':[],
-    'counter':0,
-    'winner':false
-  }
-}
-const socket = io('https://db.timesy.ru:3111'); // Подключаемся к серверу
-let track = 1;
-// Обработчик событий и т.д.
-socket.on('connect', () => {
-  console.log('Connected to server!', socket.id);
-  const id_elem = document.getElementById('user_id')
-  id_elem.innerHTML = socket.id
-});
-
-socket.on('joined_success', () => {
-  overlay.classList.add('show_overlay');
-  informPopup.style.display = 'flex';
-  document.getElementById('inform_popup_text').innerHTML = `Вы успешно присоединились!`
-
-  // opponent.innerHTML = `<span style="color:green; font-weight: 700;">Вы успешно присоединились!</span>`
-})
-  document.getElementById('popup_close').addEventListener('click', closepopup)
-
-socket.on('game_disconnetcted', () => {
-
-  
-  overlay.classList.add('show_overlay');
-  informPopup.style.display = 'flex';
-  document.getElementById('inform_popup_text').innerHTML = `Соперник покинул игру.`
- 
-})
-//Пример отправки сообщения
-socket.emit('my event', { my: 'data' });
-
-socket.on('joined', (data)=>{
-    console.log(data);
-    result.innerHTML = 'Ваш ход';
-    informPopup.style.display = 'flex';
-    document.getElementById('inform_popup_text').innerHTML = `Противник присоединился!`
-    fb.forEach(el => {
-      el.classList.remove('show_overlay');
-    })
-})
-
-
-socket.on('opponent_move', data => {
-
-
-  blocks.forEach(el => {
-    el.classList.remove('box-shadow');
-  })
-   
-
-
-  makeMove(data);
-
-  container.style.pointerEvents = 'all';
-  opponent_move = false;
-  // if (isServer) {
-  //   result.innerHTML = 'Player X move now';
-  // } else {
-  // }
- 
-  
-  audios[track].play();
-  track += 1;
-  if (track >= 3) track = 0;
-  result.innerHTML = 'Ваш ход';
-})
-
-createRoom.addEventListener('click', () =>{
-
-  socket.emit('create_game');
-  isServer = true;
-  opponent.innerHTML = `Комната создана! Ожидание игрока!`
-  overlay.classList.add('show_overlay');
-  
-  fb.forEach(el => {
-    el.classList.add('show_overlay');
-  })
-  
- 
-  
-});
-
-
-connectRoom.addEventListener('click', () => {
-
-
-  let id = connectRoomInput.value;
-  console.log(id);
-  
-  isServer = false;
-
-  socket.emit('join_game', id);
-  container.style.pointerEvents = 'none';
-  opponent_move = true;
-  // console.log(id);
-  
-  result.innerHTML = 'Ход соперника';
-
-})
-
-
-
-
-
-
-
-if (nextField == undefined) {
-  container.classList.add('box-shadow');
-}
-
-let block0 = document.querySelectorAll('[block="0"]');
-let block1 = document.querySelectorAll('[block="1"]');
-let block2 = document.querySelectorAll('[block="2"]');
-let block3 = document.querySelectorAll('[block="3"]');
-let block4 = document.querySelectorAll('[block="4"]');
-let block5 = document.querySelectorAll('[block="5"]');
-let block6 = document.querySelectorAll('[block="6"]');
-let block7 = document.querySelectorAll('[block="7"]');
-let block8 = document.querySelectorAll('[block="8"]');
-
-
-/* Check Priority for first move X or O */
-
-// function checkPriority() {
-//   if(check.checked) {
-//     for (let el in player0) {
-//       player0[el]['comb'].length = 0;
-//       playeriX[el]['comb'].length = 0;
-//     }
-//     switchText.innerHTML = 'P1 move first';
-//     counter = 0;
-//   }
-//   else {
-//     for (let el in player0) {
-      
-//       player0[el]['comb'].length = 0;
-//       playeriX[el]['comb'].length = 0;
-      
-//     }
-//     switchText.innerHTML = 'P2 move first';
-//     counter = 1;
-//   }
-// }
-
-// check.addEventListener('change', checkPriority);
-
-
- /* Call for function gamePlay() when click on any cell */
-cells.forEach(el => {
-  el.addEventListener('click', gamePlay);
-})
-// for (let el of block0) {
-//   el.addEventListener('click', gamePlay);
-// }
-// for (let el of block1) {
-//   el.addEventListener('click', gamePlay);
-// }
-// for (let el of block2) {
-//   el.addEventListener('click', gamePlay);
-// }
-// for (let el of block3) {
-//   el.addEventListener('click', gamePlay);
-// }
-// for (let el of block4) {
-//   el.addEventListener('click', gamePlay);
-// }
-// for (let el of block5) {
-//   el.addEventListener('click', gamePlay);
-// }
-// for (let el of block6) {
-//   el.addEventListener('click', gamePlay);
-// }
-// for (let el of block7) {
-//   el.addEventListener('click', gamePlay);
-// }
-// for (let el of block8) {
-//   el.addEventListener('click', gamePlay);
-// }
-
-/* Cheching for a winner on every click on container */
-
-container.addEventListener('click', checkForAWinner)
-
-
-function checkForAWinner() {
-  if (compare(winCombs, playerO)) {
-    result.innerHTML = 'Player 2 win!';
-    rows.forEach(el => {
-      if (el.classList.contains('box-shadow')) el.classList.remove('box-shadow')
-    })
-    container.classList.add('win-shadow');
-    winner = true;
-    score[1]++;
-    p2.innerHTML = `P2: ${score[1]}`;
-    container.removeEventListener('click', checkForAWinner);
-  }
-  else if(compare(winCombs, playerX)) {
-    result.innerHTML = 'Player 1 win!';
-    rows.forEach(el => {
-      if (el.classList.contains('box-shadow')) el.classList.remove('box-shadow')
-    })
-    container.classList.add('win-shadow');
-    winner = true;
-    score[0]++;
-    p1.innerHTML = `P1: ${score[0]}`;
-    container.removeEventListener('click', checkForAWinner);
-  }
-  else if (playerO.length + playerX.length > 8 && (!compare(winCombs, playerX))){
-    result.innerHTML = 'It\'s a draw!';
-    container.removeEventListener('click', checkForAWinner);
-  }
-} 
-
-
-/* Compare function check for player Combination include any winning combination */
-
-function compare(winCombs, playerComb){
-
-  let flag = false;
-  for (let el of winCombs) {
-    flag = el.every(elem => playerComb.includes(elem));
-    if (flag) return true;
-  }
-  return flag;
-}
-
-
-// for (let el of cells) {
-//   el.innerHTML = `${el.getAttribute('block')}`
-// }
-
-
-/* Function of gameplay */
-
-function gamePlay() {
-
-  
-  let block = document.querySelector(`[type="block"][value="${this.getAttribute('block')}"]`);
-  let blockNumber = this.getAttribute('block');
-console.log(`this.value`, this.value, `nextField`, nextField, !!nextField);
-
-
-  if (!opponent_move && blockNumber == nextField || nextField == undefined) {
-
-  /* Check for draw */ 
-
- if((player0[blockNumber]['comb'].length + playeriX[blockNumber]['comb'].length) > 7 && !player0[blockNumber]['winner'] && !winner){
-  block.setAttribute('ready', false);
-  block.innerHTML = 'D';
- }
-
-
-/* Check X for possibilaty make a move and then check for win */
-
- if (!(counter % 2) && !winner && this.getAttribute('ready') == 'true' && (nextField == blockNumber || firstMove) && !!block.getAttribute('ready')) {
-firstMove = false;
-console.log(`move x`);
-
-this.setAttribute('ready', false);
-this.innerHTML = 'X';
-// result.innerHTML = 'Player O move now';
-playeriX[blockNumber]['comb'].push(this.value);
-counter++;
-console.log(this.value);
-
-nextField = this.value;
-
-
-if (nextField != undefined && document.querySelector(`[type="block"][value="${nextField}"]`).getAttribute('ready') != 'false') {
-  document.querySelector(`[type="block"][value="${this.getAttribute('block')}"]`).classList.remove('box-shadow');
-  document.querySelector(`[type="block"][value="${nextField}"]`).classList.add('box-shadow');
-  container.classList.remove('box-shadow');
-}
-else document.querySelector(`[type="block"][value="${this.getAttribute('block')}"]`).classList.remove('box-shadow');
-  
-console.log(+(document.querySelector(`[type="block"][value="${this.getAttribute('value')}"]`).getAttribute('value')));
-
-
-  if (playeriX[blockNumber]['comb'].length > 2 && compare(winCombs, playeriX[blockNumber]['comb'])) {
-    block.setAttribute('ready', false);
-    block.innerHTML = 'X';
-    playeriX[blockNumber]['winner'] = true;
-    playerX.push(+(blockNumber))
-
-    if (block.getAttribute('ready') == 'false') {
-      block.classList.remove('box-shadow');
+function checkWin(cells) { return wins.some(line => line.every(index => cells[index])); }
+function hasPlayerWon(cells, player) { return wins.some(line => line.every(index => cells[index] === player)); }
+function isFull(cells) { return cells.every(Boolean); }
+function availableBoards() { return boardWinners.map((winner, index) => winner || isFull(boards[index]) ? null : index).filter(index => index !== null); }
+function availableCells(boardIndex) { return boards[boardIndex].map((value, index) => value ? null : index).filter(index => index !== null); }
+
+function render() {
+  boardEl.innerHTML = '';
+  for (let boardIndex = 0; boardIndex < 9; boardIndex += 1) {
+    const small = document.createElement('div');
+    const winner = boardWinners[boardIndex];
+    small.className = `small-board ${winner ? `won-${winner.toLowerCase()}` : ''} ${isFull(boards[boardIndex]) && !winner ? 'drawn' : ''} ${currentBoard === null || currentBoard === boardIndex ? 'active' : ''}`;
+    small.dataset.winner = winner || '';
+    small.setAttribute('role', 'group');
+    small.setAttribute('aria-label', `Малое поле ${boardIndex + 1}${winner ? `, выиграл ${winner}` : ''}`);
+    for (let cellIndex = 0; cellIndex < 9; cellIndex += 1) {
+      const cell = document.createElement('button');
+      const value = boards[boardIndex][cellIndex];
+      cell.className = `cell ${value ? value.toLowerCase() : ''}`;
+      cell.textContent = value || '';
+      cell.type = 'button';
+      cell.dataset.board = boardIndex;
+      cell.dataset.cell = cellIndex;
+      cell.disabled = Boolean(value || winner || gameOver || (currentBoard !== null && currentBoard !== boardIndex) || (mode === 'ai' && turn === 'O') || (mode === 'online' && turn !== playerSide));
+      cell.setAttribute('aria-label', value ? `Поле ${boardIndex + 1}, клетка ${cellIndex + 1}: ${value}` : `Поле ${boardIndex + 1}, клетка ${cellIndex + 1}`);
+      cell.addEventListener('click', () => makeMove(boardIndex, cellIndex));
+      small.appendChild(cell);
     }
-
+    boardEl.appendChild(small);
   }
-  if ([...playerO, ...playerX].includes(+(document.querySelector(`[type="block"][value="${this.getAttribute('value')}"]`).getAttribute('value')))) {
-    nextField = undefined;
-    firstMove = true;
-   }
- }  
-
-
-/* Check O for possibilaty make a move and then check for win */
-
-else if ((counter % 2) && !winner && this.getAttribute('ready') == 'true'&& (nextField == blockNumber || firstMove) && !!block.getAttribute('ready')) {
-console.log(`move 0`);
-
-  firstMove = false;
-this.setAttribute('ready', false);
-this.innerHTML = 'O'
-// result.innerHTML = 'Player X move now';
-player0[blockNumber]['comb'].push(this.value)
-counter--
-nextField = this.value;
-
-if (nextField != undefined && document.querySelector(`[type="block"][value="${nextField}"]`).getAttribute('ready') != 'false') {
-  document.querySelector(`[type="block"][value="${this.getAttribute('block')}"]`).classList.remove('box-shadow');
-  document.querySelector(`[type="block"][value="${nextField}"]`).classList.add('box-shadow');
-  container.classList.remove('box-shadow');
-}
-else document.querySelector(`[type="block"][value="${this.getAttribute('block')}"]`).classList.remove('box-shadow');
-
-
-
-console.log(+block.getAttribute('value'));
-
-//playeriX[this.getAttribute('block')]['counter']--;
-
-  if (player0[blockNumber]['comb'].length > 2 && compare(winCombs, player0[blockNumber]['comb'])) {
-   block.setAttribute('ready', false);
-   block.innerHTML = 'O';
-   player0[blockNumber]['winner'] = true;
-   playerO.push(+(blockNumber))
-
-   if (block.getAttribute('ready') == 'false') {
-    block.classList.remove('box-shadow');
-  }
-  } 
-  if ([...playerO, ...playerX].includes(+(document.querySelector(`[type="block"][value="${this.getAttribute('value')}"]`).getAttribute('value')))) {
-    nextField = undefined;
-      firstMove = true;
-    }
- }
- let flag = 0;
-  for (let el of blocks) {
-   
-    if (el.classList.contains('box-shadow')) {
-    flag++;
-    }
-   
-  }
-
-  if (flag == 0) {
-    container.classList.add('box-shadow');
-  }
-  else container.classList.remove('box-shadow');
-
-  const data = genData();
-
-  socket.emit('move', data);
-  container.style.pointerEvents = 'none';
-  opponent_move = true;
-  result.innerHTML = 'Ход соперника';
-}
+  $('#turn-symbol').textContent = turn;
+  $('#turn-symbol').className = `turn-symbol ${turn === 'O' ? 'o-color' : ''}`;
+  $('#turn-label').textContent = mode === 'ai' && turn === 'O' ? 'Компьютер думает' : turn === 'X' ? 'Вы' : 'Соперник';
+  $('#turn-hint').textContent = gameOver ? 'Партия завершена' : currentBoard === null ? 'Выберите любое малое поле' : `Играйте в поле ${currentBoard + 1}`;
+  $('#score-x').textContent = scores.X; $('#score-o').textContent = scores.O;
 }
 
-function checkForAvaliable () {
-  
+function snapshot() { return { boards: boards.map(row => [...row]), boardWinners: [...boardWinners], currentBoard, turn, gameOver, scores: { ...scores } }; }
+function restore(state) { boards = state.boards.map(row => [...row]); boardWinners = [...state.boardWinners]; currentBoard = state.currentBoard; turn = state.turn; gameOver = state.gameOver; scores = { ...state.scores }; render(); }
+function chooseNextBoard(cellIndex) { return boardWinners[cellIndex] || isFull(boards[cellIndex]) ? null : cellIndex; }
+function updateBoardWinner(boardIndex) { if (hasPlayerWon(boards[boardIndex], turn)) boardWinners[boardIndex] = turn; else if (isFull(boards[boardIndex])) boardWinners[boardIndex] = 'D'; }
+function finishGame(winner) {
+  gameOver = true;
+  const won = winner === playerSide;
+  if (winner) { scores[winner] += 1; resultRating(won); } else resultRating(null);
+  showResult(winner);
+  if (mode === 'online' && socket) socket.emit('game_result', { winner: winner || 'draw' });
+  render();
 }
-// nextField == this.getAttribute('block') && this.getAttribute('ready')
-// if !this.getAttribute('ready') nextField = undefined;
-
-
-
-/* check for saved games in localStorage and display saved games if it is */
-
-if (localStorage.getItem('data')) {
-  let data = localStorage.getItem('data');
-  data = JSON.parse(data);
-  document.querySelector('.saved--game').innerHTML = `Saved game ${data['date']} <div><a onclick="loadGame()">Load saved</a></div> <div><a onclick="removeSaved()">Remove saved</a></div>`;
+function makeMove(boardIndex, cellIndex, remote = false) {
+  if (gameOver || boards[boardIndex][cellIndex] || boardWinners[boardIndex] || (currentBoard !== null && currentBoard !== boardIndex)) return;
+  if (!remote && ((mode === 'ai' && turn === 'O') || (mode === 'online' && turn !== 'X'))) return;
+  history.push(snapshot()); boards[boardIndex][cellIndex] = turn;
+  updateBoardWinner(boardIndex);
+  const globalWinner = hasPlayerWon(boardWinners, turn);
+  if (globalWinner || availableBoards().length === 0) { finishGame(globalWinner ? turn : null); } else { currentBoard = chooseNextBoard(cellIndex); turn = turn === 'X' ? 'O' : 'X'; render(); }
+  if (mode === 'online' && !remote && socket) socket.emit('move', JSON.stringify(toLegacyData()));
+  if (mode === 'ai' && turn === 'O' && !gameOver) { clearTimeout(aiTimer); aiTimer = setTimeout(aiMove, difficulty === 'easy' ? 350 : 600); }
+}
+function resultRating(won) { const delta = mode === 'online' ? (won === null ? 3 : won ? 24 : -18) : (won === null ? 0 : won ? 8 : -4); profile.rating = Math.max(800, profile.rating + delta); saveProfile(); paintProfile(); $('#rating-value').textContent = profile.rating; $('.trend').textContent = `${delta > 0 ? '+' : ''}${delta}`; return delta; }
+function showResult(winner) {
+  const dialog = $('#result-dialog'); const won = winner === playerSide; const draw = !winner;
+  dialog.className = `result-dialog ${draw ? 'draw' : won ? '' : 'loss'}`;
+  $('#result-symbol').textContent = draw ? '—' : won ? 'X' : 'O';
+  $('#result-kicker').textContent = draw ? 'MATCH DRAW' : won ? 'VICTORY' : 'MATCH LOST';
+  $('#result-title').textContent = draw ? 'Ничья' : won ? 'Победа' : 'Поражение';
+  $('#result-message').textContent = draw ? 'Оба игрока дошли до предела поля.' : won ? 'Вы забрали большую линию. Отличная партия.' : 'Соперник собрал линию первым. Реванш рядом.';
+  const delta = mode === 'online' ? (draw ? 3 : won ? 24 : -18) : (draw ? 0 : won ? 8 : -4);
+  $('#result-rating').textContent = `${delta > 0 ? '+' : ''}${delta} рейтинга`;
+  dialog.showModal();
 }
 
-
-function genData () {
-  let data = {};
-  // for (let el of rows){
-  //   data[el.value] = el.textContent;
-  // }
-  data['zero'] = player0;
-  data['iX'] = playeriX;
-  data['moves'] = [playerX, playerO];
-  data['nextField'] = nextField;
-  data['firstMove'] = firstMove;
-  data['score'] = score;
-  data['counter'] = counter;
-
-
-  return JSON.stringify(data);
-}
-
-/* Event on Save game Button that callback func with stringify JSON and push variables in localStorage */
-
-// saveGameButton.addEventListener('click', () => {
-
-//   let data = {};
-//   // for (let el of rows){
-//   //   data[el.value] = el.textContent;
-//   // }
-//   data['zero'] = player0;
-//   data['iX'] = playeriX;
-//   data['moves'] = [playerX, playerO];
-//   data['nextField'] = nextField;
-//   data['firstMove'] = firstMove;
-//   data['score'] = score;
-//   data['counter'] = counter;
-
-  
-//   let date = new Date;
-//   data['date'] = date.toLocaleString();
-
-
-
-//   console.log(data);
-//   //data['check'] = check.checked;
-//   localStorage.setItem('data',JSON.stringify(data))
-//   document.querySelector('.saved--game').innerHTML = `Saved game ${data['date']} <div><a onclick="loadGame()">Load saved</a></div> <div><a onclick="removeSaved()">Remove saved</a></div>`;
-// })
-
-/* Func that load already saved object 'data' from localStorage and pull variables */
-
-function loadGame() {
-
-  let data = localStorage.getItem('data');
-  data = JSON.parse(data);
-
-  console.log(data);
-  player0 = data['zero'];
-  playeriX = data['iX'];
-  playerX = data['moves'][0];
-  playerO = data['moves'][1];
-  score = data['score'];
-  counter = data['counter'];
-  nextField = data['nextField'];
-  firstMove = data['firstMove'];
-  console.log(player0, playeriX, playerX, playerO, counter, nextField);
-  
-  //check.checked = data['check'];
-  // switchText.innerHTML = check.checked ? 'P1 move first' : 'P2 move first';
-  p1.innerHTML = `P1: ${score[0]}`
-  p2.innerHTML = `P2: ${score[1]}`
-
-  if (playerX.length > 2 && compare(winCombs, playerX)) {
-    result.innerHTML = 'Player 1 win!';
-    winner = true;
+function aiMove() {
+  const options = currentBoard === null ? availableBoards() : [currentBoard];
+  const boardIndex = options[Math.floor(Math.random() * options.length)];
+  if (boardIndex === undefined) return;
+  const cells = availableCells(boardIndex);
+  let cellIndex = cells[Math.floor(Math.random() * cells.length)];
+  if (difficulty !== 'easy') {
+    const winning = cells.find(index => { boards[boardIndex][index] = 'O'; const yes = hasPlayerWon(boards[boardIndex], 'O'); boards[boardIndex][index] = null; return yes; });
+    const blocking = cells.find(index => { boards[boardIndex][index] = 'X'; const yes = hasPlayerWon(boards[boardIndex], 'X'); boards[boardIndex][index] = null; return yes; });
+    cellIndex = winning ?? blocking ?? (cells.includes(4) ? 4 : cellIndex);
   }
-  if (playerO.length > 2 && compare(winCombs, playerO)) {
-    result.innerHTML = 'Player 2 win!';
-    winner = true;
-  }
-
-  for (let el of rows){
-
-    if (data['iX'][`${el.value}`]['winner']){
-      el.textContent = 'X'
-      el.setAttribute('ready', false);
-    }
-
-    if (data['zero'][`${el.value}`]['winner']){
-      el.textContent = 'O'
-      el.setAttribute('ready', false);
-    }
-if (nextField != undefined) {
-  console.log(`set shadow`);
-  
-  document.querySelector(`[type="block"][value="${nextField}"]`).classList.add('box-shadow');
-  container.classList.remove('box-shadow');
-}
-  }
-  for (let el of cells) {
-    if (data['iX'][`${el.getAttribute('block')}`]['comb'].length != 0 && data['iX'][`${el.getAttribute('block')}`]['comb'].includes(el.value)) {
-      el.textContent = 'X';
-     
-
-    }
-    if (data['zero'][`${el.getAttribute('block')}`]['comb'].length != 0 && data['zero'][`${el.getAttribute('block')}`]['comb'].includes(el.value)) {
-      el.textContent = 'O';
-     
-    }
-  }
-  
-}
-function makeMove(d) {
-
-  let data = JSON.parse(d);
-
-  console.log(data);
-  player0 = data['zero'];
-  playeriX = data['iX'];
-  playerX = data['moves'][0];
-  playerO = data['moves'][1];
-  score = data['score'];
-  counter = data['counter'];
-  nextField = data['nextField'];
-  firstMove = data['firstMove'];
-  console.log(player0, playeriX, playerX, playerO, counter, nextField);
-  
-  //check.checked = data['check'];
-  // switchText.innerHTML = check.checked ? 'P1 move first' : 'P2 move first';
-  p1.innerHTML = `P1: ${score[0]}`
-  p2.innerHTML = `P2: ${score[1]}`
-
-  if (playerX.length > 2 && compare(winCombs, playerX)) {
-    result.innerHTML = 'Player 1 win!';
-    winner = true;
-  }
-  if (playerO.length > 2 && compare(winCombs, playerO)) {
-    result.innerHTML = 'Player 2 win!';
-    winner = true;
-  }
-
-  for (let el of rows){
-
-    if (data['iX'][`${el.value}`]['winner']){
-      el.textContent = 'X'
-      el.setAttribute('ready', false);
-    }
-
-    if (data['zero'][`${el.value}`]['winner']){
-      el.textContent = 'O'
-      el.setAttribute('ready', false);
-    }
-if (nextField != undefined) {
-  console.log(`set shadow`);
-  
-  document.querySelector(`[type="block"][value="${nextField}"]`).classList.add('box-shadow');
-  container.classList.remove('box-shadow');
-} else container.classList.add('box-shadow');
-  }
-  for (let el of cells) {
-    if (data['iX'][`${el.getAttribute('block')}`]['comb'].length != 0 && data['iX'][`${el.getAttribute('block')}`]['comb'].includes(el.value)) {
-      el.textContent = 'X';
-     
-
-    }
-    if (data['zero'][`${el.getAttribute('block')}`]['comb'].length != 0 && data['zero'][`${el.getAttribute('block')}`]['comb'].includes(el.value)) {
-      el.textContent = 'O';
-     
-    }
-  }
-  
+  makeMove(boardIndex, cellIndex, true);
 }
 
-/* Func that erase any saved data called 'data' on localStorage*/
-
-function removeSaved() {
-  localStorage.removeItem('data');
-  document.querySelector('.saved--game').innerHTML = ``;
+function newGame() { clearTimeout(aiTimer); boards = emptyBoards(); boardWinners = Array(9).fill(null); currentBoard = null; turn = 'X'; gameOver = false; history = []; scores = { X: 0, O: 0 }; render(); showToast(mode === 'online' ? 'Новая онлайн-партия готова' : 'Новая тренировочная партия'); }
+function toLegacyData() {
+  const zero = {}, iX = {};
+  for (let i = 0; i < 9; i += 1) { zero[i] = { comb: boards[i].map((v, n) => v === 'O' ? n : null).filter(n => n !== null), counter: boards[i].filter(v => v === 'O').length, winner: boardWinners[i] === 'O' }; iX[i] = { comb: boards[i].map((v, n) => v === 'X' ? n : null).filter(n => n !== null), counter: boards[i].filter(v => v === 'X').length, winner: boardWinners[i] === 'X' }; }
+  return { zero, iX, moves: [boardWinners.map((v, i) => v === 'X' ? i : null).filter(i => i !== null), boardWinners.map((v, i) => v === 'O' ? i : null).filter(i => i !== null)], nextField: currentBoard, firstMove: currentBoard === null, score: [scores.X, scores.O], counter: turn === 'X' ? 0 : 1 };
+}
+function applyLegacy(raw) {
+  const data = typeof raw === 'string' ? JSON.parse(raw) : raw;
+  boards = emptyBoards(); boardWinners = Array(9).fill(null);
+  for (let i = 0; i < 9; i += 1) { (data.iX?.[i]?.comb || []).forEach(index => boards[i][index] = 'X'); (data.zero?.[i]?.comb || []).forEach(index => boards[i][index] = 'O'); if (data.iX?.[i]?.winner) boardWinners[i] = 'X'; if (data.zero?.[i]?.winner) boardWinners[i] = 'O'; }
+  currentBoard = data.nextField ?? null; scores = { X: data.score?.[0] || 0, O: data.score?.[1] || 0 }; turn = data.counter % 2 ? 'O' : 'X'; render();
+}
+function updateOnlineUsers(users) {
+  if (!Array.isArray(users) || !users.length) return;
+  const list = $('#online-users');
+  list.innerHTML = users.map(user => {
+    const name = typeof user === 'string' ? user : (user.name || user.id || 'Игрок');
+    const rating = typeof user === 'object' && user.rating ? user.rating : '—';
+    return `<div class="compact-user"><span class="avatar avatar-x">${initials(name)}</span><span><b>${name}</b><small>${user.ready ? 'Готов играть' : 'В лобби'}</small></span><span class="user-rating">${rating}</span></div>`;
+  }).join('');
+  $('#online-count').textContent = users.length;
 }
 
-
-
-  /* Event on new game button erase players arrays, set winner = false, check for who's first to move, erase content from cells */
-        
-  newGameButton.addEventListener('click', newGame)
-
-  function newGame(){
-    [playerO, playerX, winner] = [[],[],false];
-    // check.checked ? counter = 0 : counter = 1;
-    result.innerHTML = '';
-    // for (let el of rows) {
-    //               el.innerHTML = '';
-    //               el.setAttribute('ready', 'true');
-    // }
-    for (let el in player0) {
-      
-      player0[el]['comb'].length = 0;
-      playeriX[el]['comb'].length = 0;
-
-    }
-
-    for (let el of cells){
-      el.innerHTML = '';
-      el.setAttribute('ready', 'true');
-    }
-    window.location.reload();
-
+function setupSocket() {
+  if (typeof io !== 'function') { setConnection(false); return; }
+  try { socket = io('https://db.timesy.ru:3111', { timeout: 5000 }); } catch { setConnection(false); return; }
+  socket.on('connect', () => { setConnection(true); $('#online-count').textContent = '1'; socket.emit('profile_update', profile); showToast('Соединение с сервером установлено'); });
+  socket.on('connect_error', () => setConnection(false));
+  socket.on('joined_success', () => { $('#room-status').textContent = 'Вы присоединились к комнате'; showToast('Вы в комнате'); });
+  socket.on('joined', () => { $('#opponent-name').textContent = 'Соперник'; $('#opponent-status').textContent = 'Подключен и готовится'; $('#opponent-ready').textContent = 'Готов'; $('#opponent-ready').classList.add('ready'); $('#player-count').textContent = '2 / 2'; $('#online-count').textContent = '2'; render(); showToast('Соперник присоединился'); });
+  socket.on('opponent_move', data => { applyLegacy(data); });
+  ['users', 'online_users', 'server_users', 'players'].forEach(eventName => socket.on(eventName, updateOnlineUsers));
+  socket.on('room_created', data => { roomCode = data.code; $('#room-code').textContent = roomCode; });
+  socket.on('room_error', data => showToast(data.message || 'Не удалось войти в комнату'));
+  socket.on('rating_update', data => { profile.rating = data.rating; saveProfile(); paintProfile(); });
+  socket.on('room_state', data => { if (data.code) { roomCode = data.code; $('#room-code').textContent = data.code; } if (data.players?.length) { $('#player-count').textContent = `${data.players.length} / 2`; const opponent = data.players.find(player => player.id !== socket.id); if (opponent) { $('#opponent-name').textContent = opponent.name; $('#opponent-status').textContent = opponent.ready ? 'Готов играть' : 'В лобби'; $('#opponent-ready').textContent = opponent.ready ? 'Готов' : 'Не готов'; } } });
+  socket.on('match_started', () => { $('#room-status').textContent = 'Оба игрока готовы. Игра началась'; showToast('Оба игрока готовы'); });
+  const disconnected = () => { $('#opponent-name').textContent = 'Ожидание соперника'; $('#opponent-status').textContent = 'Соперник вышел из комнаты'; $('#player-count').textContent = '1 / 2'; $('#online-count').textContent = '1'; showToast('Соперник покинул игру'); };
+  socket.on('game_disconnected', disconnected); socket.on('game_disconnetcted', disconnected);
 }
+function createRoom() { mode = 'online'; playerSide = 'X'; setMode(mode); roomCode = Math.random().toString(36).slice(2, 8).toUpperCase(); $('#room-code').textContent = roomCode; $('#room-status').textContent = 'Ожидание второго игрока'; $('#opponent-row').classList.add('waiting-player'); if (socket) { socket.emit('create_game'); socket.emit('player_ready', { ready: true }); } showToast('Комната создана. Отправьте код другу.'); }
+function joinRoom(code) { if (!code) { showToast('Введите код комнаты'); return; } mode = 'online'; playerSide = 'O'; setMode(mode); roomCode = code.toUpperCase(); $('#room-code').textContent = roomCode; $('#room-status').textContent = 'Подключение к комнате'; if (socket) { socket.emit('join_game', roomCode); socket.emit('player_ready', { ready: true }); } turn = 'X'; render(); }
 
-/* Event on reset score button with callback func that erase score */
+$('#new-game-button').addEventListener('click', newGame);
+$('#undo-button').addEventListener('click', () => { if (mode === 'online' || !history.length) return; restore(history.pop()); showToast('Последний ход отменён'); });
+$('#create-room').addEventListener('click', createRoom);
+$('#join-room').addEventListener('click', () => { $('#room-input-wrap').hidden = !$('#room-input-wrap').hidden; if (!$('#room-input-wrap').hidden) $('#room-input').focus(); });
+$('#confirm-join').addEventListener('click', () => joinRoom($('#room-input').value.trim()));
+$('#copy-room').addEventListener('click', async () => { if (!roomCode) return showToast('Сначала создайте комнату'); try { await navigator.clipboard.writeText(roomCode); showToast('Код скопирован'); } catch { showToast(`Код комнаты: ${roomCode}`); } });
+$('#ready-button').addEventListener('click', () => { ready = !ready; $('#ready-button').classList.toggle('not-ready', !ready); $('#ready-label').textContent = ready ? 'Вы готовы' : 'Вы не готовы'; $('#your-ready').textContent = ready ? 'Готов' : 'Не готов'; if (socket) socket.emit('player_ready', { ready }); });
+document.querySelectorAll('[data-difficulty]').forEach(button => button.addEventListener('click', () => { difficulty = button.dataset.difficulty; mode = 'ai'; setMode('ai'); document.querySelectorAll('[data-difficulty]').forEach(item => item.classList.toggle('selected', item === button)); showToast(`Компьютер: ${difficulty === 'easy' ? 'легко' : difficulty === 'medium' ? 'средне' : 'сложно'}`); newGame(); }));
+$('#profile-button').addEventListener('click', () => { $('#name-input').value = profile.name; $('#profile-dialog').showModal(); });
+$('#save-profile').addEventListener('click', () => { const name = $('#name-input').value.trim(); if (name) profile.name = name; saveProfile(); paintProfile(); showToast('Профиль обновлён'); });
+$('#help-button').addEventListener('click', () => $('#help-dialog').showModal());
+$('#result-new-game').addEventListener('click', newGame);
 
-  // resetScore.addEventListener('click', () => {
-  //   score = [0,0];
-  //   p1.innerHTML = `P1: ${score[0]}`
-  //   p2.innerHTML = `P2: ${score[1]}`
-  // })
-
- /* Function that generate gradient colors and set it on game field background */
-
-function getRandomGradient() {
-let getRgb = () => Math.floor(Math.random() * 255.9);
-let bg = `linear-gradient(45deg, rgb(${getRgb()} ${getRgb()} ${getRgb()}), rgb(${getRgb()} ${getRgb()} ${getRgb()}))`;
-// document.querySelector('body').style.background = bg;document.querySelector('body').style.background = bg;
-document.querySelector('.container').style.background = bg;
-}
-
-/* Call for func */
-
-//getRandomGradient()
+paintProfile(); setMode('ai'); render(); setupSocket();
