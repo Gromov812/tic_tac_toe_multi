@@ -24,6 +24,7 @@ let socketConnected = false;
 let aiTimer = null;
 let scores = { X: 0, O: 0 };
 let chatScope = 'room';
+const chatMessages = { room: [], global: [] };
 
 function saveProfile() { localStorage.setItem(playerKey, JSON.stringify(profile)); }
 function initials(name) { return (name || 'И').trim().slice(0, 1).toUpperCase(); }
@@ -145,27 +146,35 @@ function updateOnlineUsers(users) {
     const name = typeof user === 'string' ? user : (user.name || user.id || 'Игрок');
     const rating = typeof user === 'object' && user.rating ? user.rating : '—';
     const readyLabel = typeof user === 'object' && user.ready ? 'Готов играть' : 'В лобби';
-    return `<div class="compact-user"><span class="avatar avatar-x">${escapeHtml(initials(name))}</span><span><b>${escapeHtml(name)}</b><small>${readyLabel}</small></span><span class="user-rating">${escapeHtml(rating)}</span></div>`;
+    const id = typeof user === 'object' ? user.id : '';
+    const actions = id && socket?.id !== id ? `<span class="user-actions"><button type="button" class="user-action" data-social="friend" data-user-id="${escapeHtml(id)}" title="Добавить в друзья">В друзья</button><button type="button" class="user-action" data-social="invite" data-user-id="${escapeHtml(id)}" title="Пригласить в игру">Играть</button></span>` : '';
+    return `<div class="compact-user"><span class="avatar avatar-x">${escapeHtml(initials(name))}</span><span class="user-info"><b>${escapeHtml(name)}</b><small>${readyLabel}</small></span><span class="user-rating">${escapeHtml(rating)}</span>${actions}</div>`;
   }).join('');
   $('#online-count').textContent = users.length;
 }
 function addChatMessage(payload) {
   const message = typeof payload === 'string' ? { name: 'Игрок', text: payload } : payload;
-  if (message.scope && message.scope !== chatScope) return;
+  const scope = message.scope === 'global' ? 'global' : 'room';
+  chatMessages[scope].push(message);
+  if (chatMessages[scope].length > 20) chatMessages[scope].shift();
+  if (scope !== chatScope) return;
+  renderChat();
+}
+function renderChat() {
   const list = $('#chat-messages'); const empty = $('#chat-empty'); if (empty) empty.remove();
-  const item = document.createElement('div'); item.className = 'chat-message';
-  const date = new Date(message.at || Date.now());
-  item.innerHTML = `<b>${escapeHtml(message.name || 'Игрок')}</b><time>${date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time><p></p>`;
-  item.querySelector('p').textContent = message.text || message.message || '';
-  list.appendChild(item); list.scrollTop = list.scrollHeight;
+  list.innerHTML = '';
+  const messages = chatMessages[chatScope];
+  if (!messages.length) { list.innerHTML = '<p class="chat-empty" id="chat-empty">Напишите первое сообщение</p>'; return; }
+  messages.forEach(message => { const item = document.createElement('div'); item.className = 'chat-message'; const date = new Date(message.at || Date.now()); item.innerHTML = `<b>${escapeHtml(message.name || 'Игрок')}</b><time>${date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time><p></p>`; item.querySelector('p').textContent = message.text || message.message || ''; list.appendChild(item); });
+  list.scrollTop = list.scrollHeight;
 }
 
 function setupSocket() {
   if (typeof io !== 'function') { setConnection(false); return; }
   try { socket = io('https://db.timesy.ru:3111', { timeout: 5000 }); } catch { setConnection(false); return; }
-  socket.on('connect', () => { setConnection(true); $('#online-count').textContent = '1'; socket.emit('profile_update', profile); showToast('Соединение с сервером установлено'); });
+  socket.on('connect', () => { setConnection(true); $('#online-count').textContent = '1'; socket.emit('profile_update', profile); socket.emit('chat_history', { scope: 'global' }); if (roomCode) socket.emit('chat_history', { scope: 'room' }); showToast('Соединение с сервером установлено'); });
   socket.on('connect_error', () => setConnection(false));
-  socket.on('joined_success', () => { $('#room-status').textContent = 'Вы присоединились к комнате'; showToast('Вы в комнате'); });
+  socket.on('joined_success', () => { $('#room-status').textContent = 'Вы присоединились к комнате'; socket.emit('chat_history', { scope: 'room' }); showToast('Вы в комнате'); });
   socket.on('joined', () => { $('#opponent-name').textContent = 'Соперник'; $('#opponent-status').textContent = 'Подключен и готовится'; $('#opponent-ready').textContent = 'Готов'; $('#opponent-ready').classList.add('ready'); $('#player-count').textContent = '2 / 2'; $('#online-count').textContent = '2'; render(); showToast('Соперник присоединился'); });
   socket.on('opponent_move', data => { applyLegacy(data); });
   ['users', 'online_users', 'server_users', 'players'].forEach(eventName => socket.on(eventName, updateOnlineUsers));
@@ -173,6 +182,11 @@ function setupSocket() {
   socket.on('room_error', data => showToast(data.message || 'Не удалось войти в комнату'));
   socket.on('rating_update', data => { profile.rating = data.rating; saveProfile(); paintProfile(); });
   socket.on('chat message', addChatMessage);
+  socket.on('chat_history', data => { if (!data?.scope || !Array.isArray(data.messages)) return; chatMessages[data.scope] = data.messages.slice(-20); if (data.scope === chatScope) renderChat(); });
+  socket.on('social_notice', data => showToast(data.message));
+  socket.on('social_error', data => showToast(data.message || 'Действие недоступно'));
+  socket.on('friend_request_received', data => showToast(`${data.from?.name || 'Игрок'} хочет добавить вас в друзья`));
+  socket.on('game_invite_received', data => { showToast(`${data.from?.name || 'Игрок'} приглашает в комнату ${data.room}`); $('#room-input').value = data.room || ''; $('#room-input-wrap').hidden = false; });
   socket.on('room_state', data => { if (data.code) { roomCode = data.code; $('#room-code').textContent = data.code; } if (data.players?.length) { $('#player-count').textContent = `${data.players.length} / 2`; const opponent = data.players.find(player => player.id !== socket.id); if (opponent) { $('#opponent-name').textContent = opponent.name; $('#opponent-status').textContent = opponent.ready ? 'Готов играть' : 'В лобби'; $('#opponent-ready').textContent = opponent.ready ? 'Готов' : 'Не готов'; } } });
   socket.on('match_started', () => { $('#room-status').textContent = 'Оба игрока готовы. Игра началась'; showToast('Оба игрока готовы'); });
   const disconnected = () => { $('#opponent-name').textContent = 'Ожидание соперника'; $('#opponent-status').textContent = 'Соперник вышел из комнаты'; $('#player-count').textContent = '1 / 2'; $('#online-count').textContent = '1'; showToast('Соперник покинул игру'); };
@@ -193,9 +207,10 @@ $('#profile-button').addEventListener('click', () => { $('#name-input').value = 
 $('#save-profile').addEventListener('click', () => { const name = $('#name-input').value.trim(); if (name) profile.name = name; saveProfile(); paintProfile(); if (socket) socket.emit('profile_update', profile); showToast('Профиль обновлён'); });
 $('#help-button').addEventListener('click', () => $('#help-dialog').showModal());
 $('#result-new-game').addEventListener('click', newGame);
-function setChatScope(scope) { chatScope = scope; $('#chat-room-scope').classList.toggle('selected', scope === 'room'); $('#chat-global-scope').classList.toggle('selected', scope === 'global'); $('#chat-status').textContent = scope === 'room' ? 'Только для участников комнаты' : 'Все игроки на сервере'; $('#chat-messages').innerHTML = '<p class="chat-empty" id="chat-empty">Напишите первое сообщение</p>'; }
+function setChatScope(scope) { chatScope = scope; $('#chat-room-scope').classList.toggle('selected', scope === 'room'); $('#chat-global-scope').classList.toggle('selected', scope === 'global'); $('#chat-status').textContent = scope === 'room' ? 'Только для участников комнаты' : 'Все игроки на сервере'; renderChat(); if (socket) socket.emit('chat_history', { scope }); }
 $('#chat-room-scope').addEventListener('click', () => setChatScope('room'));
 $('#chat-global-scope').addEventListener('click', () => setChatScope('global'));
 $('#chat-form').addEventListener('submit', event => { event.preventDefault(); const input = $('#chat-input'); const text = input.value.trim(); if (!text) return; if (!socket || !socketConnected) return showToast('Чат доступен после подключения к серверу'); socket.emit('chat message', { scope: chatScope, text }); input.value = ''; });
+$('#online-users').addEventListener('click', event => { const button = event.target.closest('[data-social]'); if (!button || !socket) return; socket.emit(button.dataset.social === 'friend' ? 'friend_request' : 'game_invite', button.dataset.userId); });
 
 paintProfile(); setMode('ai'); render(); setupSocket();
