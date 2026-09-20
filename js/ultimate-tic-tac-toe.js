@@ -25,17 +25,11 @@ let scores = { X: 0, O: 0 };
 
 function saveProfile() { localStorage.setItem(playerKey, JSON.stringify(profile)); }
 function initials(name) { return (name || 'И').trim().slice(0, 1).toUpperCase(); }
+function escapeHtml(value) { return String(value).replace(/[&<>'"]/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[character]); }
 function paintProfile() {
   const first = initials(profile.name);
-  $('#profile-name').textContent = profile.name;
-  $('#online-name').textContent = profile.name;
-  $('#online-user-name').textContent = profile.name;
-  $('#profile-avatar').textContent = first;
-  $('#online-avatar').textContent = first;
-  $('#rating-value').textContent = profile.rating;
-  $('#profile-rating').textContent = `${profile.rating} рейтинга`;
-  $('#online-users .user-rating').textContent = profile.rating;
-  $('#rating-progress').style.width = `${Math.max(8, Math.min(100, ((profile.rating - 800) % 400) / 4))}%`;
+  [['#profile-name', profile.name], ['#online-name', profile.name], ['#online-user-name', profile.name], ['#profile-avatar', first], ['#online-avatar', first], ['#rating-value', profile.rating], ['#profile-rating', `${profile.rating} рейтинга`]].forEach(([selector, value]) => { const element = $(selector); if (element) element.textContent = value; });
+  const progress = $('#rating-progress'); if (progress) progress.style.width = `${Math.max(8, Math.min(100, ((profile.rating - 800) % 400) / 4))}%`;
 }
 function showToast(message) { const toast = $('#toast'); toast.textContent = message; toast.classList.add('show'); clearTimeout(showToast.timer); showToast.timer = setTimeout(() => toast.classList.remove('show'), 2600); }
 function setConnection(connected, label = connected ? 'Сервер подключен' : 'Офлайн режим') { socketConnected = connected; $('#connection-dot').classList.toggle('online', connected); $('#connection-label').textContent = label; }
@@ -148,9 +142,19 @@ function updateOnlineUsers(users) {
   list.innerHTML = users.map(user => {
     const name = typeof user === 'string' ? user : (user.name || user.id || 'Игрок');
     const rating = typeof user === 'object' && user.rating ? user.rating : '—';
-    return `<div class="compact-user"><span class="avatar avatar-x">${initials(name)}</span><span><b>${name}</b><small>${user.ready ? 'Готов играть' : 'В лобби'}</small></span><span class="user-rating">${rating}</span></div>`;
+    const readyLabel = typeof user === 'object' && user.ready ? 'Готов играть' : 'В лобби';
+    return `<div class="compact-user"><span class="avatar avatar-x">${escapeHtml(initials(name))}</span><span><b>${escapeHtml(name)}</b><small>${readyLabel}</small></span><span class="user-rating">${escapeHtml(rating)}</span></div>`;
   }).join('');
   $('#online-count').textContent = users.length;
+}
+function addChatMessage(payload) {
+  const message = typeof payload === 'string' ? { name: 'Игрок', text: payload } : payload;
+  const list = $('#chat-messages'); const empty = $('#chat-empty'); if (empty) empty.remove();
+  const item = document.createElement('div'); item.className = 'chat-message';
+  const date = new Date(message.at || Date.now());
+  item.innerHTML = `<b>${escapeHtml(message.name || 'Игрок')}</b><time>${date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time><p></p>`;
+  item.querySelector('p').textContent = message.text || message.message || '';
+  list.appendChild(item); list.scrollTop = list.scrollHeight;
 }
 
 function setupSocket() {
@@ -165,6 +169,7 @@ function setupSocket() {
   socket.on('room_created', data => { roomCode = data.code; $('#room-code').textContent = roomCode; });
   socket.on('room_error', data => showToast(data.message || 'Не удалось войти в комнату'));
   socket.on('rating_update', data => { profile.rating = data.rating; saveProfile(); paintProfile(); });
+  socket.on('chat message', addChatMessage);
   socket.on('room_state', data => { if (data.code) { roomCode = data.code; $('#room-code').textContent = data.code; } if (data.players?.length) { $('#player-count').textContent = `${data.players.length} / 2`; const opponent = data.players.find(player => player.id !== socket.id); if (opponent) { $('#opponent-name').textContent = opponent.name; $('#opponent-status').textContent = opponent.ready ? 'Готов играть' : 'В лобби'; $('#opponent-ready').textContent = opponent.ready ? 'Готов' : 'Не готов'; } } });
   socket.on('match_started', () => { $('#room-status').textContent = 'Оба игрока готовы. Игра началась'; showToast('Оба игрока готовы'); });
   const disconnected = () => { $('#opponent-name').textContent = 'Ожидание соперника'; $('#opponent-status').textContent = 'Соперник вышел из комнаты'; $('#player-count').textContent = '1 / 2'; $('#online-count').textContent = '1'; showToast('Соперник покинул игру'); };
@@ -182,8 +187,9 @@ $('#copy-room').addEventListener('click', async () => { if (!roomCode) return sh
 $('#ready-button').addEventListener('click', () => { ready = !ready; $('#ready-button').classList.toggle('not-ready', !ready); $('#ready-label').textContent = ready ? 'Вы готовы' : 'Вы не готовы'; $('#your-ready').textContent = ready ? 'Готов' : 'Не готов'; if (socket) socket.emit('player_ready', { ready }); });
 document.querySelectorAll('[data-difficulty]').forEach(button => button.addEventListener('click', () => { difficulty = button.dataset.difficulty; mode = 'ai'; setMode('ai'); document.querySelectorAll('[data-difficulty]').forEach(item => item.classList.toggle('selected', item === button)); showToast(`Компьютер: ${difficulty === 'easy' ? 'легко' : difficulty === 'medium' ? 'средне' : 'сложно'}`); newGame(); }));
 $('#profile-button').addEventListener('click', () => { $('#name-input').value = profile.name; $('#profile-dialog').showModal(); });
-$('#save-profile').addEventListener('click', () => { const name = $('#name-input').value.trim(); if (name) profile.name = name; saveProfile(); paintProfile(); showToast('Профиль обновлён'); });
+$('#save-profile').addEventListener('click', () => { const name = $('#name-input').value.trim(); if (name) profile.name = name; saveProfile(); paintProfile(); if (socket) socket.emit('profile_update', profile); showToast('Профиль обновлён'); });
 $('#help-button').addEventListener('click', () => $('#help-dialog').showModal());
 $('#result-new-game').addEventListener('click', newGame);
+$('#chat-form').addEventListener('submit', event => { event.preventDefault(); const input = $('#chat-input'); const text = input.value.trim(); if (!text) return; if (!socket || !socketConnected) return showToast('Чат доступен после подключения к серверу'); socket.emit('chat message', { text }); input.value = ''; });
 
 paintProfile(); setMode('ai'); render(); setupSocket();
