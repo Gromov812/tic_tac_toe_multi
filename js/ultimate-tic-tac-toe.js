@@ -7,6 +7,7 @@ const emptyBoards = () => Array.from({ length: 9 }, () => Array(9).fill(null));
 const playerKey = 'gridbound-profile';
 
 let profile = JSON.parse(localStorage.getItem(playerKey) || '{"name":"Игрок","rating":1200}');
+if (!profile.playerId) { profile.playerId = globalThis.crypto?.randomUUID?.() || `player-${Date.now()}-${Math.random().toString(36).slice(2)}`; localStorage.setItem(playerKey, JSON.stringify(profile)); }
 let boards = emptyBoards();
 let boardWinners = Array(9).fill(null);
 let currentBoard = null;
@@ -22,6 +23,7 @@ let socket = null;
 let socketConnected = false;
 let aiTimer = null;
 let scores = { X: 0, O: 0 };
+let chatScope = 'room';
 
 function saveProfile() { localStorage.setItem(playerKey, JSON.stringify(profile)); }
 function initials(name) { return (name || 'И').trim().slice(0, 1).toUpperCase(); }
@@ -149,6 +151,7 @@ function updateOnlineUsers(users) {
 }
 function addChatMessage(payload) {
   const message = typeof payload === 'string' ? { name: 'Игрок', text: payload } : payload;
+  if (message.scope && message.scope !== chatScope) return;
   const list = $('#chat-messages'); const empty = $('#chat-empty'); if (empty) empty.remove();
   const item = document.createElement('div'); item.className = 'chat-message';
   const date = new Date(message.at || Date.now());
@@ -190,6 +193,9 @@ $('#profile-button').addEventListener('click', () => { $('#name-input').value = 
 $('#save-profile').addEventListener('click', () => { const name = $('#name-input').value.trim(); if (name) profile.name = name; saveProfile(); paintProfile(); if (socket) socket.emit('profile_update', profile); showToast('Профиль обновлён'); });
 $('#help-button').addEventListener('click', () => $('#help-dialog').showModal());
 $('#result-new-game').addEventListener('click', newGame);
-$('#chat-form').addEventListener('submit', event => { event.preventDefault(); const input = $('#chat-input'); const text = input.value.trim(); if (!text) return; if (!socket || !socketConnected) return showToast('Чат доступен после подключения к серверу'); socket.emit('chat message', { text }); input.value = ''; });
+function setChatScope(scope) { chatScope = scope; $('#chat-room-scope').classList.toggle('selected', scope === 'room'); $('#chat-global-scope').classList.toggle('selected', scope === 'global'); $('#chat-status').textContent = scope === 'room' ? 'Только для участников комнаты' : 'Все игроки на сервере'; $('#chat-messages').innerHTML = '<p class="chat-empty" id="chat-empty">Напишите первое сообщение</p>'; }
+$('#chat-room-scope').addEventListener('click', () => setChatScope('room'));
+$('#chat-global-scope').addEventListener('click', () => setChatScope('global'));
+$('#chat-form').addEventListener('submit', event => { event.preventDefault(); const input = $('#chat-input'); const text = input.value.trim(); if (!text) return; if (!socket || !socketConnected) return showToast('Чат доступен после подключения к серверу'); socket.emit('chat message', { scope: chatScope, text }); input.value = ''; });
 
 paintProfile(); setMode('ai'); render(); setupSocket();
