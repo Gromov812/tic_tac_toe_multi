@@ -25,6 +25,8 @@ let aiTimer = null;
 let scores = { X: 0, O: 0 };
 let chatScope = 'room';
 const chatMessages = { room: [], global: [] };
+const sounds = { notice: new Audio('./js/1.mp3'), start: new Audio('./js/3.mp3') };
+const socialInbox = [];
 
 function saveProfile() { localStorage.setItem(playerKey, JSON.stringify(profile)); }
 function initials(name) { return (name || 'И').trim().slice(0, 1).toUpperCase(); }
@@ -35,6 +37,7 @@ function paintProfile() {
   const progress = $('#rating-progress'); if (progress) progress.style.width = `${Math.max(8, Math.min(100, ((profile.rating - 800) % 400) / 4))}%`;
 }
 function showToast(message) { const toast = $('#toast'); toast.textContent = message; toast.classList.add('show'); clearTimeout(showToast.timer); showToast.timer = setTimeout(() => toast.classList.remove('show'), 2600); }
+function playSound(name) { const sound = sounds[name]; if (!sound) return; sound.currentTime = 0; sound.play().catch(() => {}); }
 function setConnection(connected, label = connected ? 'Сервер подключен' : 'Офлайн режим') { socketConnected = connected; $('#connection-dot').classList.toggle('online', connected); $('#connection-label').textContent = label; }
 function setMode(nextMode) {
   mode = nextMode;
@@ -168,6 +171,13 @@ function renderChat() {
   messages.forEach(message => { const item = document.createElement('div'); item.className = 'chat-message'; const date = new Date(message.at || Date.now()); item.innerHTML = `<b>${escapeHtml(message.name || 'Игрок')}</b><time>${date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time><p></p>`; item.querySelector('p').textContent = message.text || message.message || ''; list.appendChild(item); });
   list.scrollTop = list.scrollHeight;
 }
+function renderSocialInbox() {
+  const list = $('#social-inbox'); const badge = $('#inbox-badge');
+  badge.textContent = socialInbox.length; badge.hidden = socialInbox.length === 0;
+  if (!socialInbox.length) { list.innerHTML = '<p class="social-empty">Новых запросов нет</p>'; return; }
+  list.innerHTML = socialInbox.map((item, index) => { const game = item.type === 'game'; const name = escapeHtml(item.from?.name || 'Игрок'); return `<article class="social-item ${game ? 'game' : 'friend'}"><span class="avatar ${game ? 'avatar-x' : ''}">${escapeHtml(initials(item.from?.name))}</span><div><b>${game ? 'Приглашение в игру' : 'Запрос в друзья'}</b><p>${game ? `${name} зовёт вас сыграть` : `${name} хочет добавить вас в друзья`}</p><div class="social-actions"><button type="button" class="${game ? 'join' : 'accept'}" data-inbox-action="accept" data-inbox-index="${index}">${game ? 'Принять и играть' : 'Принять'}</button><button type="button" data-inbox-action="decline" data-inbox-index="${index}">Скрыть</button></div></div></article>`; }).join('');
+}
+function addSocialItem(item) { socialInbox.push(item); renderSocialInbox(); playSound('notice'); showToast(item.type === 'game' ? 'Новое приглашение в игру' : 'Новый запрос в друзья'); }
 
 function setupSocket() {
   if (typeof io !== 'function') { setConnection(false); return; }
@@ -178,17 +188,20 @@ function setupSocket() {
   socket.on('joined', () => { $('#opponent-name').textContent = 'Соперник'; $('#opponent-status').textContent = 'Подключен и готовится'; $('#opponent-ready').textContent = 'Готов'; $('#opponent-ready').classList.add('ready'); $('#player-count').textContent = '2 / 2'; $('#online-count').textContent = '2'; render(); showToast('Соперник присоединился'); });
   socket.on('opponent_move', data => { applyLegacy(data); });
   ['users', 'online_users', 'server_users', 'players'].forEach(eventName => socket.on(eventName, updateOnlineUsers));
-  socket.on('room_created', data => { roomCode = data.code; $('#room-code').textContent = roomCode; });
+  socket.on('room_created', data => { roomCode = data.code; $('#room-code').textContent = roomCode; if (data.auto) { mode = 'online'; playerSide = 'X'; setMode(mode); $('#room-status').textContent = 'Комната создана для приглашения'; } });
   socket.on('room_error', data => showToast(data.message || 'Не удалось войти в комнату'));
   socket.on('rating_update', data => { profile.rating = data.rating; saveProfile(); paintProfile(); });
   socket.on('chat message', addChatMessage);
   socket.on('chat_history', data => { if (!data?.scope || !Array.isArray(data.messages)) return; chatMessages[data.scope] = data.messages.slice(-20); if (data.scope === chatScope) renderChat(); });
   socket.on('social_notice', data => showToast(data.message));
   socket.on('social_error', data => showToast(data.message || 'Действие недоступно'));
-  socket.on('friend_request_received', data => showToast(`${data.from?.name || 'Игрок'} хочет добавить вас в друзья`));
-  socket.on('game_invite_received', data => { showToast(`${data.from?.name || 'Игрок'} приглашает в комнату ${data.room}`); $('#room-input').value = data.room || ''; $('#room-input-wrap').hidden = false; });
+  socket.on('social_inbox', data => { (data?.items || []).forEach(item => socialInbox.push(item)); renderSocialInbox(); if (data?.items?.length) playSound('notice'); });
+  socket.on('friend_request_received', data => addSocialItem({ ...data, type: 'friend' }));
+  socket.on('game_invite_received', data => addSocialItem({ ...data, type: 'game' }));
+  socket.on('friend_request_accepted', data => showToast(`${data.by?.name || 'Игрок'} принял вашу заявку`));
+  socket.on('game_invite_accepted', data => { mode = 'online'; playerSide = 'O'; roomCode = data.room; setMode(mode); $('#room-code').textContent = roomCode; $('#room-status').textContent = 'Соперник принял приглашение'; render(); });
   socket.on('room_state', data => { if (data.code) { roomCode = data.code; $('#room-code').textContent = data.code; } if (data.players?.length) { $('#player-count').textContent = `${data.players.length} / 2`; const opponent = data.players.find(player => player.id !== socket.id); if (opponent) { $('#opponent-name').textContent = opponent.name; $('#opponent-status').textContent = opponent.ready ? 'Готов играть' : 'В лобби'; $('#opponent-ready').textContent = opponent.ready ? 'Готов' : 'Не готов'; } } });
-  socket.on('match_started', () => { $('#room-status').textContent = 'Оба игрока готовы. Игра началась'; showToast('Оба игрока готовы'); });
+  socket.on('match_started', () => { $('#room-status').textContent = 'Оба игрока готовы. Игра началась'; $('#turn-bar').classList.add('match-started'); setTimeout(() => $('#turn-bar').classList.remove('match-started'), 900); playSound('start'); showToast('Новая игра началась'); });
   const disconnected = () => { $('#opponent-name').textContent = 'Ожидание соперника'; $('#opponent-status').textContent = 'Соперник вышел из комнаты'; $('#player-count').textContent = '1 / 2'; $('#online-count').textContent = '1'; showToast('Соперник покинул игру'); };
   socket.on('game_disconnected', disconnected); socket.on('game_disconnetcted', disconnected);
 }
@@ -212,5 +225,6 @@ $('#chat-room-scope').addEventListener('click', () => setChatScope('room'));
 $('#chat-global-scope').addEventListener('click', () => setChatScope('global'));
 $('#chat-form').addEventListener('submit', event => { event.preventDefault(); const input = $('#chat-input'); const text = input.value.trim(); if (!text) return; if (!socket || !socketConnected) return showToast('Чат доступен после подключения к серверу'); socket.emit('chat message', { scope: chatScope, text }); input.value = ''; });
 $('#online-users').addEventListener('click', event => { const button = event.target.closest('[data-social]'); if (!button || !socket) return; socket.emit(button.dataset.social === 'friend' ? 'friend_request' : 'game_invite', button.dataset.userId); });
+$('#social-inbox').addEventListener('click', event => { const button = event.target.closest('[data-inbox-action]'); if (!button) return; const index = Number(button.dataset.inboxIndex); const item = socialInbox[index]; if (!item) return; if (button.dataset.inboxAction === 'accept') { if (item.type === 'friend') socket.emit('friend_request_accept', item.from.id); else socket.emit('game_invite_accept', item.room); } else if (item.type === 'friend') socket.emit('friend_request_decline', item.from.id); else socket.emit('game_invite_decline', item.room); socialInbox.splice(index, 1); renderSocialInbox(); });
 
 paintProfile(); setMode('ai'); render(); setupSocket();
