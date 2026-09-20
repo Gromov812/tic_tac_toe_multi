@@ -77,6 +77,19 @@ async function createGameInvite(fromUser, targetSocketId, roomCode) {
   return true;
 }
 
+async function loadSocialInbox(socket) {
+  const user = users.get(socket.id);
+  if (!db || !user?.dbId) return socket.emit('social_inbox', { items: [] });
+  const [friends] = await db.execute(`SELECT p.external_id AS id, p.display_name AS name FROM friendships f JOIN players p ON p.id = f.requester_id WHERE f.addressee_id = ? AND f.status = 'pending' ORDER BY f.created_at DESC LIMIT 20`, [user.dbId]);
+  const [invites] = await db.execute(`SELECT p.external_id AS sender_external_id, p.display_name AS name, i.room_code AS room FROM game_invites i JOIN players p ON p.id = i.sender_id WHERE i.recipient_id = ? AND i.status = 'pending' ORDER BY i.created_at DESC LIMIT 20`, [user.dbId]);
+  const onlineByExternal = [...users.entries()].reduce((map, [socketId, onlineUser]) => { if (onlineUser.externalId) map.set(onlineUser.externalId, socketId); return map; }, new Map());
+  const items = [
+    ...friends.map(item => ({ type: 'friend', from: { id: onlineByExternal.get(item.id) || item.id, name: item.name } })),
+    ...invites.map(item => ({ type: 'game', from: { id: onlineByExternal.get(item.sender_external_id) || item.sender_external_id, name: item.name }, room: item.room })),
+  ];
+  socket.emit('social_inbox', { items });
+}
+
 function makeRoomCode() {
   let code;
   do code = Math.random().toString(36).slice(2, 8).toUpperCase(); while (rooms.has(code));
@@ -95,6 +108,12 @@ function broadcastUsers() {
 function roomFor(socketId) {
   const user = users.get(socketId);
   return user && user.room ? rooms.get(user.room) : null;
+}
+
+function onlineUserById(identifier) {
+  const value = String(identifier || '');
+  for (const [socketId, user] of users.entries()) if (socketId === value || user.externalId === value) return { socketId, user };
+  return null;
 }
 
 function broadcastRoom(room) {
@@ -177,6 +196,22 @@ function joinRoom(socket, code) {
   }
   socket.emit('joined_success', { room: room.code });
   broadcastRoom(room);
+  return room;
+}
+
+function createRoomForUser(socket, ready = false) {
+  leaveRoom(socket.id, false);
+  const code = makeRoomCode();
+  const room = { code, players: [socket.id], started: false };
+  rooms.set(code, room);
+  const user = users.get(socket.id);
+  user.room = code;
+  user.ready = ready;
+  socket.join(code);
+  socket.emit('room_created', { code, auto: ready });
+  socket.emit('await_player', { code });
+  broadcastRoom(room);
+  return room;
 }
 
 io.on('connection', socket => {
@@ -191,23 +226,13 @@ io.on('connection', socket => {
     user.name = String(profile?.name || 'Игрок').slice(0, 24);
     ratings.set(socket.id, Math.max(800, Number(profile?.rating) || ratings.get(socket.id) || 1200));
     user.externalId = String(profile?.playerId || socket.id).slice(0, 128);
-    ensurePlayer(user.externalId, user.name, ratings.get(socket.id)).then(player => { if (player) user.dbId = player.id; }).catch(error => console.warn('Could not save player:', error.message));
+    ensurePlayer(user.externalId, user.name, ratings.get(socket.id)).then(player => { if (player) user.dbId = player.id; return loadSocialInbox(socket); }).catch(error => console.warn('Could not save player:', error.message));
     broadcastUsers();
     broadcastRoom(roomFor(socket.id));
   });
 
   socket.on('create_game', () => {
-    leaveRoom(socket.id, false);
-    const code = makeRoomCode();
-    const room = { code, players: [socket.id], started: false };
-    rooms.set(code, room);
-    const user = users.get(socket.id);
-    user.room = code;
-    user.ready = false;
-    socket.join(code);
-    socket.emit('room_created', { code });
-    socket.emit('await_player', { code });
-    broadcastRoom(room);
+    createRoomForUser(socket, false);
   });
 
   socket.on('join_game', code => joinRoom(socket, code));
@@ -273,10 +298,26 @@ io.on('connection', socket => {
   });
   socket.on('game_invite', async targetSocketId => {
     const user = users.get(socket.id); const target = users.get(String(targetSocketId));
-    if (!user?.room) return socket.emit('social_error', { message: 'Сначала создайте комнату.' });
+    if (!user) return;
     if (!target) return socket.emit('social_error', { message: 'Игрок больше не в сети.' });
-    try { if (!await createGameInvite(user, String(targetSocketId), user.room)) throw new Error('База данных недоступна.'); io.to(String(targetSocketId)).emit('game_invite_received', { from: publicUser(socket.id), room: user.room }); socket.emit('social_notice', { message: `Приглашение отправлено игроку ${target.name}.` }); } catch (error) { socket.emit('social_error', { message: error.message }); }
+    try { const room = roomFor(socket.id) || createRoomForUser(socket, true); user.ready = true; if (!await createGameInvite(user, String(targetSocketId), room.code)) throw new Error('База данных недоступна.'); io.to(String(targetSocketId)).emit('game_invite_received', { from: publicUser(socket.id), room: room.code }); socket.emit('social_notice', { message: `Приглашение отправлено игроку ${target.name}.` }); } catch (error) { socket.emit('social_error', { message: error.message }); }
   });
+  socket.on('friend_request_accept', async requesterSocketId => {
+    const user = users.get(socket.id); const requesterEntry = onlineUserById(requesterSocketId); const requester = requesterEntry?.user;
+    if (!user || !requester) return socket.emit('social_error', { message: 'Игрок больше не в сети.' });
+    try { if (!db || !user.dbId || !requester.dbId) throw new Error('Профиль ещё сохраняется, повторите через секунду.'); await db.execute(`UPDATE friendships SET status = 'accepted' WHERE requester_id = ? AND addressee_id = ?`, [requester.dbId, user.dbId]); io.to(requesterEntry.socketId).emit('friend_request_accepted', { by: publicUser(socket.id) }); socket.emit('social_notice', { message: `Вы добавили ${requester.name} в друзья.` }); } catch (error) { socket.emit('social_error', { message: error.message }); }
+  });
+  socket.on('friend_request_decline', async requesterSocketId => { const user = users.get(socket.id); const requester = onlineUserById(requesterSocketId)?.user; if (db && user?.dbId && requester?.dbId) await db.execute(`UPDATE friendships SET status = 'declined' WHERE requester_id = ? AND addressee_id = ?`, [requester.dbId, user.dbId]); });
+  socket.on('game_invite_accept', async roomCode => {
+    const room = rooms.get(String(roomCode || '').toUpperCase());
+    if (!room) return socket.emit('social_error', { message: 'Комната приглашения уже закрыта.' });
+    const user = users.get(socket.id); const joinedRoom = joinRoom(socket, room.code); user.ready = true;
+    if (db && user.dbId) await db.execute(`UPDATE game_invites SET status = 'accepted', responded_at = CURRENT_TIMESTAMP WHERE recipient_id = ? AND room_code = ? AND status = 'pending'`, [user.dbId, room.code]);
+    socket.emit('game_invite_accepted', { room: joinedRoom.code });
+    if (joinedRoom.players.length === 2 && joinedRoom.players.every(playerId => users.get(playerId)?.ready)) { joinedRoom.started = true; try { await startMatchRecord(joinedRoom); } catch (error) { console.warn('Could not create match record:', error.message); } joinedRoom.players.forEach(playerId => io.to(playerId).emit('match_started', { code: joinedRoom.code })); }
+    broadcastRoom(joinedRoom);
+  });
+  socket.on('game_invite_decline', async roomCode => { const user = users.get(socket.id); const room = rooms.get(String(roomCode || '').toUpperCase()); const senderId = room?.players?.[0]; const sender = users.get(senderId); if (db && user?.dbId && sender?.dbId) await db.execute(`UPDATE game_invites SET status = 'declined', responded_at = CURRENT_TIMESTAMP WHERE recipient_id = ? AND room_code = ? AND status = 'pending'`, [user.dbId, room.code]); if (senderId) io.to(senderId).emit('social_notice', { message: `${user?.name || 'Игрок'} отклонил приглашение.` }); });
   socket.on('disconnect', () => { leaveRoom(socket.id); users.delete(socket.id); ratings.delete(socket.id); broadcastUsers(); });
 });
 
