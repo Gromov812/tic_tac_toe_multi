@@ -99,7 +99,8 @@ function makeRoomCode() {
 function publicUser(socketId, viewerId, relations = []) {
   const user = users.get(socketId) || {};
   const relation = relations.find(item => item.other === user.externalId);
-  return { id: socketId, name: user.name || 'Игрок', rating: ratings.get(socketId) || 1200, ready: Boolean(user.ready), room: user.room || null, isSelf: socketId === viewerId, isFriend: relation?.status === 'accepted', friendStatus: relation?.status || null };
+  const room = user.room ? rooms.get(user.room) : null;
+  return { id: socketId, name: user.name || 'Игрок', rating: ratings.get(socketId) || 1200, ready: Boolean(user.ready), inGame: Boolean(user.inGame || room?.started || room?.waitingForDecision), roomPlayers: room?.players?.length || 0, room: user.room || null, isSelf: socketId === viewerId, isFriend: relation?.status === 'accepted', friendStatus: relation?.status || null };
 }
 
 async function broadcastUsers() {
@@ -116,6 +117,12 @@ async function broadcastUsers() {
 function roomFor(socketId) {
   const user = users.get(socketId);
   return user && user.room ? rooms.get(user.room) : null;
+}
+
+function userIsBusy(socketId) {
+  const user = users.get(socketId);
+  const room = user?.room ? rooms.get(user.room) : null;
+  return Boolean(user?.inGame || room?.players?.length >= 2);
 }
 
 function onlineUserById(identifier) {
@@ -143,6 +150,7 @@ async function startMatchRecord(room) {
   if (!x?.dbId || !o?.dbId) return;
   const [result] = await db.execute('INSERT INTO matches (room_code, player_x_id, player_o_id) VALUES (?, ?, ?)', [room.code, x.dbId, o.dbId]);
   room.matchId = result.insertId;
+  room.playerDbIds = [x.dbId, o.dbId];
 }
 
 async function saveMove(room, socketId, data) {
@@ -156,19 +164,41 @@ async function saveMove(room, socketId, data) {
   await db.execute('UPDATE matches SET moves_count = moves_count + 1 WHERE id = ?', [room.matchId]);
 }
 
-async function finishMatchRecord(room, winner) {
+async function finishMatchRecord(room, winner, customDeltas = null) {
   if (!db || !room?.matchId || room.resultSaved) return;
   room.resultSaved = true;
   const result = winner === 'X' ? 'X' : winner === 'O' ? 'O' : 'draw';
   await db.execute('UPDATE matches SET winner = ?, status = \'finished\', finished_at = CURRENT_TIMESTAMP WHERE id = ?', [result, room.matchId]);
-  const deltas = result === 'draw' ? [3, 3] : [result === 'X' ? 24 : -18, result === 'O' ? 24 : -18];
+  const deltas = customDeltas || (result === 'draw' ? [3, 3] : [result === 'X' ? 24 : -18, result === 'O' ? 24 : -18]);
   for (let index = 0; index < room.players.length; index += 1) {
     const user = users.get(room.players[index]);
-    if (!user?.dbId) continue;
+    const playerDbId = room.playerDbIds?.[index] || user?.dbId;
+    if (!playerDbId) continue;
     const won = deltas[index] > 0;
     const draw = result === 'draw';
-    await db.execute(`UPDATE players SET rating = GREATEST(800, rating + ?), games_played = games_played + 1, wins = wins + ?, losses = losses + ?, draws = draws + ? WHERE id = ?`, [deltas[index], won && !draw ? 1 : 0, !won && !draw ? 1 : 0, draw ? 1 : 0, user.dbId]);
+    await db.execute(`UPDATE players SET rating = GREATEST(800, rating + ?), games_played = games_played + 1, wins = wins + ?, losses = losses + ?, draws = draws + ? WHERE id = ?`, [deltas[index], won && !draw ? 1 : 0, !won && !draw ? 1 : 0, draw ? 1 : 0, playerDbId]);
   }
+}
+
+async function resolveAbandonedRoom(room, survivorId, claimWin) {
+  const survivorIndex = room.players.indexOf(survivorId);
+  const winner = claimWin && survivorIndex >= 0 ? (survivorIndex === 0 ? 'X' : 'O') : null;
+  const deltas = winner ? (survivorIndex === 0 ? [24, -18] : [-18, 24]) : [0, 0];
+  const survivor = users.get(survivorId);
+  if (survivor) {
+    survivor.inGame = false;
+    survivor.ready = false;
+    if (winner) {
+      ratings.set(survivorId, Math.max(800, (ratings.get(survivorId) || 1200) + 24));
+      io.to(survivorId).emit('rating_update', { rating: ratings.get(survivorId), delta: 24 });
+    }
+    io.to(survivorId).emit('match_result', { winner, ratingDelta: winner ? 24 : 0 });
+  }
+  room.started = false;
+  room.waitingForDecision = false;
+  await finishMatchRecord(room, winner, deltas).catch(error => console.warn('Could not save abandoned match:', error.message));
+  rooms.delete(room.code);
+  broadcastUsers();
 }
 
 function leaveRoom(socketId, notify = true) {
@@ -188,6 +218,7 @@ function leaveRoom(socketId, notify = true) {
 }
 
 function joinRoom(socket, code) {
+  if (userIsBusy(socket.id)) return socket.emit('room_error', { message: 'Сначала завершите текущую игру.' });
   const requestedCode = String(code || '').trim();
   const room = rooms.get(requestedCode.toUpperCase()) || (users.has(requestedCode) ? roomFor(requestedCode) : null);
   if (!room) return socket.emit('room_error', { message: 'Комната не найдена или уже закрыта.' });
@@ -240,6 +271,7 @@ io.on('connection', socket => {
   });
 
   socket.on('create_game', () => {
+    if (userIsBusy(socket.id)) return socket.emit('room_error', { message: 'Нельзя создать новую игру во время текущей партии.' });
     createRoomForUser(socket, false);
   });
 
@@ -252,6 +284,7 @@ io.on('connection', socket => {
     user.ready = Boolean(payload?.ready);
     if (room.players.length === 2 && room.players.every(playerId => users.get(playerId)?.ready)) {
       room.started = true;
+      room.players.forEach(playerId => { const player = users.get(playerId); if (player) player.inGame = true; });
       try { await startMatchRecord(room); } catch (error) { console.warn('Could not create match record:', error.message); }
       room.players.forEach((playerId, index) => io.to(playerId).emit('match_started', { code: room.code, side: index === 0 ? 'X' : 'O' }));
     }
@@ -277,9 +310,15 @@ io.on('connection', socket => {
       io.to(playerId).emit('rating_update', { rating: ratings.get(playerId), delta });
     });
     room.started = false;
+    room.players.forEach(playerId => { const player = users.get(playerId); if (player) player.inGame = false; });
     room.players.forEach(playerId => io.to(playerId).emit('match_result', { winner: payload?.winner || 'draw' }));
     finishMatchRecord(room, payload?.winner).catch(error => console.warn('Could not save match result:', error.message));
     broadcastRoom(room);
+  });
+  socket.on('abandoned_result', async payload => {
+    const room = roomFor(socket.id);
+    if (!room?.waitingForDecision || room.pendingDisconnect?.survivorId !== socket.id) return;
+    await resolveAbandonedRoom(room, socket.id, payload?.result === 'win');
   });
 
   socket.on('chat message', payload => {
@@ -309,6 +348,7 @@ io.on('connection', socket => {
     const user = users.get(socket.id); const target = users.get(String(targetSocketId));
     if (!user) return;
     if (!target) return socket.emit('social_error', { message: 'Игрок больше не в сети.' });
+    if (userIsBusy(String(targetSocketId))) return socket.emit('social_error', { message: 'Этот игрок уже участвует в игре.' });
     try { const room = roomFor(socket.id) || createRoomForUser(socket, true); user.ready = true; if (!await createGameInvite(user, String(targetSocketId), room.code)) throw new Error('База данных недоступна.'); io.to(String(targetSocketId)).emit('game_invite_received', { from: publicUser(socket.id), room: room.code }); socket.emit('social_notice', { message: `Приглашение отправлено игроку ${target.name}.` }); } catch (error) { socket.emit('social_error', { message: error.message }); }
   });
   socket.on('friend_request_accept', async requesterSocketId => {
@@ -339,11 +379,26 @@ io.on('connection', socket => {
     if (!room) return socket.emit('social_notice', { message: 'Приглашение принято, но комната уже закрыта.' });
     const joinedRoom = joinRoom(socket, room.code); user.ready = true;
     socket.emit('game_invite_accepted', { room: joinedRoom.code });
-    if (joinedRoom.players.length === 2 && joinedRoom.players.every(playerId => users.get(playerId)?.ready)) { joinedRoom.started = true; try { await startMatchRecord(joinedRoom); } catch (error) { console.warn('Could not create match record:', error.message); } joinedRoom.players.forEach((playerId, index) => io.to(playerId).emit('match_started', { code: joinedRoom.code, side: index === 0 ? 'X' : 'O' })); }
+    if (joinedRoom.players.length === 2 && joinedRoom.players.every(playerId => users.get(playerId)?.ready)) { joinedRoom.started = true; joinedRoom.players.forEach(playerId => { const player = users.get(playerId); if (player) player.inGame = true; }); try { await startMatchRecord(joinedRoom); } catch (error) { console.warn('Could not create match record:', error.message); } joinedRoom.players.forEach((playerId, index) => io.to(playerId).emit('match_started', { code: joinedRoom.code, side: index === 0 ? 'X' : 'O' })); }
     broadcastRoom(joinedRoom);
   });
   socket.on('game_invite_decline', async roomCode => { const user = users.get(socket.id); const normalizedRoomCode = String(roomCode || '').toUpperCase(); const room = rooms.get(normalizedRoomCode); const senderId = room?.players?.[0]; const sender = users.get(senderId); if (db && user?.dbId) await db.execute(`UPDATE game_invites SET status = 'declined', responded_at = CURRENT_TIMESTAMP WHERE recipient_id = ? AND room_code = ? AND status = 'pending'`, [user.dbId, normalizedRoomCode]); if (senderId) io.to(senderId).emit('social_notice', { message: `${user?.name || 'Игрок'} отклонил приглашение.` }); });
-  socket.on('disconnect', () => { leaveRoom(socket.id); users.delete(socket.id); ratings.delete(socket.id); broadcastUsers(); });
+  socket.on('disconnect', async () => {
+    const room = roomFor(socket.id);
+    if (room?.waitingForDecision && room.pendingDisconnect?.survivorId === socket.id) {
+      await resolveAbandonedRoom(room, socket.id, false);
+      users.delete(socket.id); ratings.delete(socket.id); return;
+    }
+    if (room?.started && room.players.length === 2) {
+      const survivorId = room.players.find(playerId => playerId !== socket.id);
+      room.started = false;
+      room.waitingForDecision = true;
+      room.pendingDisconnect = { leftId: socket.id, survivorId };
+      io.to(survivorId).emit('game_opponent_left', { room: room.code });
+      users.delete(socket.id); ratings.delete(socket.id); broadcastUsers(); return;
+    }
+    leaveRoom(socket.id); users.delete(socket.id); ratings.delete(socket.id); broadcastUsers();
+  });
 });
 
 initializeDatabase().catch(error => console.warn('Database initialization failed:', error.message));
