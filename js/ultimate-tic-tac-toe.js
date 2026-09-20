@@ -210,6 +210,7 @@ function setupSocket() {
   socket.on('rating_update', data => { profile.rating = data.rating; saveProfile(); paintProfile(); });
   socket.on('chat message', addChatMessage);
   socket.on('chat_history', data => { if (!data?.scope || !Array.isArray(data.messages)) return; chatMessages[data.scope] = data.messages.slice(-20); if (data.scope === chatScope) renderChat(); });
+  socket.on('match_result', data => { if (gameOver) return; gameOver = true; showResult(data.winner === 'draw' ? null : data.winner); render(); });
   socket.on('social_notice', data => showToast(data.message));
   socket.on('social_error', data => showToast(data.message || 'Действие недоступно'));
   socket.on('social_inbox', data => { (data?.items || []).forEach(item => socialInbox.push(item)); renderSocialInbox(); if (data?.items?.length) playSound('notice'); });
@@ -218,7 +219,7 @@ function setupSocket() {
   socket.on('friend_request_accepted', data => showToast(`${data.by?.name || 'Игрок'} принял вашу заявку`));
   socket.on('game_invite_accepted', data => { mode = 'online'; playerSide = 'O'; roomCode = data.room; setMode(mode); $('#room-code').textContent = roomCode; $('#room-status').textContent = 'Соперник принял приглашение'; render(); });
   socket.on('room_state', data => { if (data.code) { roomCode = data.code; $('#room-code').textContent = data.code; } if (data.players?.length) { $('#player-count').textContent = `${data.players.length} / 2`; const opponent = data.players.find(player => player.id !== socket.id); if (opponent) { $('#opponent-name').textContent = opponent.name; $('#opponent-status').textContent = opponent.ready ? 'Готов играть' : 'В лобби'; $('#opponent-ready').textContent = opponent.ready ? 'Готов' : 'Не готов'; } } });
-  socket.on('match_started', () => { $('#room-status').textContent = 'Оба игрока готовы. Игра началась'; $('#turn-bar').classList.add('match-started'); setTimeout(() => $('#turn-bar').classList.remove('match-started'), 900); playSound('start'); showToast('Новая игра началась'); });
+  socket.on('match_started', data => { if (data.side) playerSide = data.side; turn = 'X'; $('#room-status').textContent = 'Оба игрока готовы. Игра началась'; $('#turn-bar').classList.add('match-started'); setTimeout(() => $('#turn-bar').classList.remove('match-started'), 900); playSound('start'); showToast('Новая игра началась'); render(); });
   const disconnected = () => { $('#opponent-name').textContent = 'Ожидание соперника'; $('#opponent-status').textContent = 'Соперник вышел из комнаты'; $('#player-count').textContent = '1 / 2'; $('#online-count').textContent = '1'; showToast('Соперник покинул игру'); };
   socket.on('game_disconnected', disconnected); socket.on('game_disconnetcted', disconnected);
 }
