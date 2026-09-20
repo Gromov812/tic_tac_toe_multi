@@ -314,7 +314,14 @@ io.on('connection', socket => {
   socket.on('friend_request_accept', async requesterSocketId => {
     const user = users.get(socket.id); const requesterEntry = onlineUserById(requesterSocketId); const requester = requesterEntry?.user;
     if (!user || !requester) return socket.emit('social_error', { message: 'Игрок больше не в сети.' });
-    try { if (!db || !user.dbId || !requester.dbId) throw new Error('Профиль ещё сохраняется, повторите через секунду.'); await db.execute(`UPDATE friendships SET status = 'accepted' WHERE requester_id = ? AND addressee_id = ?`, [requester.dbId, user.dbId]); io.to(requesterEntry.socketId).emit('friend_request_accepted', { by: publicUser(socket.id) }); socket.emit('social_notice', { message: `Вы добавили ${requester.name} в друзья.` }); broadcastUsers(); } catch (error) { socket.emit('social_error', { message: error.message }); }
+    try {
+      if (!db || !user.dbId || !requester.dbId) throw new Error('Профиль ещё сохраняется, повторите через секунду.');
+      await db.execute(`UPDATE friendships SET status = 'accepted' WHERE requester_id = ? AND addressee_id = ?`, [requester.dbId, user.dbId]);
+      await db.execute(`INSERT INTO friendships (requester_id, addressee_id, status) VALUES (?, ?, 'accepted') ON DUPLICATE KEY UPDATE status = 'accepted'`, [user.dbId, requester.dbId]);
+      io.to(requesterEntry.socketId).emit('friend_request_accepted', { by: publicUser(socket.id) });
+      socket.emit('social_notice', { message: `Вы добавили ${requester.name} в друзья.` });
+      broadcastUsers();
+    } catch (error) { socket.emit('social_error', { message: error.message }); }
   });
   socket.on('friend_request_decline', async requesterSocketId => { const user = users.get(socket.id); const requester = onlineUserById(requesterSocketId)?.user; if (db && user?.dbId && requester?.dbId) await db.execute(`UPDATE friendships SET status = 'declined' WHERE requester_id = ? AND addressee_id = ?`, [requester.dbId, user.dbId]); });
   socket.on('friend_remove', async targetSocketId => {
