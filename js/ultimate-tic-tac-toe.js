@@ -78,7 +78,7 @@ function render() {
   }
   $('#turn-symbol').textContent = turn;
   $('#turn-symbol').className = `turn-symbol ${turn === 'O' ? 'o-color' : ''}`;
-  $('#turn-label').textContent = mode === 'ai' && turn === 'O' ? 'Компьютер думает' : turn === 'X' ? 'Вы' : 'Соперник';
+  $('#turn-label').textContent = mode === 'ai' && turn === 'O' ? 'Компьютер думает' : turn === playerSide ? 'Вы' : 'Соперник';
   $('#turn-hint').textContent = gameOver ? 'Партия завершена' : currentBoard === null ? 'Выберите любое малое поле' : `Играйте в поле ${currentBoard + 1}`;
   $('#score-x').textContent = scores.X; $('#score-o').textContent = scores.O;
 }
@@ -97,7 +97,7 @@ function finishGame(winner) {
 }
 function makeMove(boardIndex, cellIndex, remote = false) {
   if (gameOver || boards[boardIndex][cellIndex] || boardWinners[boardIndex] || (currentBoard !== null && currentBoard !== boardIndex)) return;
-  if (!remote && ((mode === 'ai' && turn === 'O') || (mode === 'online' && turn !== 'X'))) return;
+  if (!remote && ((mode === 'ai' && turn === 'O') || (mode === 'online' && turn !== playerSide))) return;
   history.push(snapshot()); boards[boardIndex][cellIndex] = turn;
   updateBoardWinner(boardIndex);
   const globalWinner = hasPlayerWon(boardWinners, turn);
