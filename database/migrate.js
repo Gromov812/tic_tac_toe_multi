@@ -16,6 +16,15 @@ async function migrate() {
   });
   const schema = await fs.readFile(path.join(__dirname, 'schema.sql'), 'utf8');
   await connection.query(schema);
+  await connection.query(`INSERT INTO friendships (requester_id, addressee_id, status)
+    SELECT f.addressee_id, f.requester_id, 'accepted'
+    FROM friendships f
+    WHERE f.status = 'accepted'
+      AND NOT EXISTS (
+        SELECT 1 FROM friendships reverse_f
+        WHERE reverse_f.requester_id = f.addressee_id
+          AND reverse_f.addressee_id = f.requester_id
+      )`);
   await connection.end();
   console.log('Database schema is up to date.');
 }
