@@ -96,13 +96,21 @@ function makeRoomCode() {
   return code;
 }
 
-function publicUser(socketId) {
+function publicUser(socketId, viewerId, relations = []) {
   const user = users.get(socketId) || {};
-  return { id: socketId, name: user.name || 'Игрок', rating: ratings.get(socketId) || 1200, ready: Boolean(user.ready), room: user.room || null };
+  const relation = relations.find(item => item.other === user.externalId);
+  return { id: socketId, name: user.name || 'Игрок', rating: ratings.get(socketId) || 1200, ready: Boolean(user.ready), room: user.room || null, isSelf: socketId === viewerId, isFriend: relation?.status === 'accepted', friendStatus: relation?.status || null };
 }
 
-function broadcastUsers() {
-  io.emit('online_users', [...users.keys()].map(publicUser));
+async function broadcastUsers() {
+  for (const [viewerId, viewer] of users.entries()) {
+    let relations = [];
+    if (db && viewer.dbId) {
+      const [rows] = await db.execute(`SELECT p.external_id AS other, f.status, f.requester_id = ? AS sent_by_me FROM friendships f JOIN players p ON p.id = IF(f.requester_id = ?, f.addressee_id, f.requester_id) WHERE (f.requester_id = ? OR f.addressee_id = ?) AND f.status IN ('pending', 'accepted')`, [viewer.dbId, viewer.dbId, viewer.dbId, viewer.dbId]);
+      relations = rows;
+    }
+    io.to(viewerId).emit('online_users', { users: [...users.keys()].map(socketId => publicUser(socketId, viewerId, relations)), friends: relations.filter(item => item.status === 'accepted').map(item => item.other) });
+  }
 }
 
 function roomFor(socketId) {
@@ -305,9 +313,16 @@ io.on('connection', socket => {
   socket.on('friend_request_accept', async requesterSocketId => {
     const user = users.get(socket.id); const requesterEntry = onlineUserById(requesterSocketId); const requester = requesterEntry?.user;
     if (!user || !requester) return socket.emit('social_error', { message: 'Игрок больше не в сети.' });
-    try { if (!db || !user.dbId || !requester.dbId) throw new Error('Профиль ещё сохраняется, повторите через секунду.'); await db.execute(`UPDATE friendships SET status = 'accepted' WHERE requester_id = ? AND addressee_id = ?`, [requester.dbId, user.dbId]); io.to(requesterEntry.socketId).emit('friend_request_accepted', { by: publicUser(socket.id) }); socket.emit('social_notice', { message: `Вы добавили ${requester.name} в друзья.` }); } catch (error) { socket.emit('social_error', { message: error.message }); }
+    try { if (!db || !user.dbId || !requester.dbId) throw new Error('Профиль ещё сохраняется, повторите через секунду.'); await db.execute(`UPDATE friendships SET status = 'accepted' WHERE requester_id = ? AND addressee_id = ?`, [requester.dbId, user.dbId]); io.to(requesterEntry.socketId).emit('friend_request_accepted', { by: publicUser(socket.id) }); socket.emit('social_notice', { message: `Вы добавили ${requester.name} в друзья.` }); broadcastUsers(); } catch (error) { socket.emit('social_error', { message: error.message }); }
   });
   socket.on('friend_request_decline', async requesterSocketId => { const user = users.get(socket.id); const requester = onlineUserById(requesterSocketId)?.user; if (db && user?.dbId && requester?.dbId) await db.execute(`UPDATE friendships SET status = 'declined' WHERE requester_id = ? AND addressee_id = ?`, [requester.dbId, user.dbId]); });
+  socket.on('friend_remove', async targetSocketId => {
+    const user = users.get(socket.id); const target = onlineUserById(targetSocketId)?.user;
+    if (!db || !user?.dbId || !target?.dbId) return socket.emit('social_error', { message: 'Не удалось удалить друга.' });
+    await db.execute('DELETE FROM friendships WHERE (requester_id = ? AND addressee_id = ?) OR (requester_id = ? AND addressee_id = ?)', [user.dbId, target.dbId, target.dbId, user.dbId]);
+    socket.emit('social_notice', { message: `${target.name} удалён из друзей.` });
+    broadcastUsers();
+  });
   socket.on('game_invite_accept', async roomCode => {
     const room = rooms.get(String(roomCode || '').toUpperCase());
     if (!room) return socket.emit('social_error', { message: 'Комната приглашения уже закрыта.' });
