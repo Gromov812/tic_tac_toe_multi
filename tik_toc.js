@@ -6,7 +6,9 @@ const http = require('http');
 const https = require('https');
 const fs = require('node:fs');
 const path = require('node:path');
+require('dotenv').config();
 const { Server } = require('socket.io');
+const mysql = require('mysql2/promise');
 
 const app = express();
 app.use(cors({ origin: true }));
@@ -26,6 +28,32 @@ const io = new Server(baseServer, { cors: { origin: true, credentials: true } })
 const rooms = new Map();
 const users = new Map();
 const ratings = new Map();
+let db = null;
+
+async function initializeDatabase() {
+  if (!process.env.DB_HOST || !process.env.DB_NAME) return;
+  try {
+    db = mysql.createPool({ host: process.env.DB_HOST, port: Number(process.env.DB_PORT || 3306), user: process.env.DB_USER, password: process.env.DB_PASSWORD, database: process.env.DB_NAME, waitForConnections: true, connectionLimit: 10, charset: 'utf8mb4' });
+    await db.query('SELECT 1');
+    console.log('MySQL database connected');
+  } catch (error) {
+    db = null;
+    console.warn(`MySQL disabled: ${error.message}`);
+  }
+}
+
+async function ensurePlayer(externalId, name = 'Игрок', rating = 1200) {
+  if (!db) return null;
+  const safeName = String(name || 'Игрок').slice(0, 24);
+  await db.execute('INSERT INTO players (external_id, display_name, rating) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE display_name = VALUES(display_name)', [externalId, safeName, rating]);
+  const [rows] = await db.execute('SELECT id, rating FROM players WHERE external_id = ?', [externalId]);
+  return rows[0] || null;
+}
+
+async function saveChatMessage(user, scope, roomCode, text) {
+  if (!db || !user?.dbId) return;
+  await db.execute('INSERT INTO chat_messages (player_id, scope, room_code, message) VALUES (?, ?, ?, ?)', [user.dbId, scope, scope === 'room' ? roomCode : null, text]);
+}
 
 function makeRoomCode() {
   let code;
@@ -57,6 +85,41 @@ function broadcastRoom(room) {
     started: room.started,
   }));
   broadcastUsers();
+}
+
+async function startMatchRecord(room) {
+  if (!db || room.matchId || room.players.length !== 2) return;
+  const x = users.get(room.players[0]);
+  const o = users.get(room.players[1]);
+  if (!x?.dbId || !o?.dbId) return;
+  const [result] = await db.execute('INSERT INTO matches (room_code, player_x_id, player_o_id) VALUES (?, ?, ?)', [room.code, x.dbId, o.dbId]);
+  room.matchId = result.insertId;
+}
+
+async function saveMove(room, socketId, data) {
+  if (!db || !room?.matchId) return;
+  const user = users.get(socketId);
+  if (!user?.dbId) return;
+  let state = data;
+  try { state = typeof data === 'string' ? JSON.parse(data) : data; } catch { return; }
+  const symbol = state.counter % 2 ? 'X' : 'O';
+  await db.execute('INSERT INTO game_moves (match_id, player_id, symbol, state_json) VALUES (?, ?, ?, ?)', [room.matchId, user.dbId, symbol, JSON.stringify(state)]);
+  await db.execute('UPDATE matches SET moves_count = moves_count + 1 WHERE id = ?', [room.matchId]);
+}
+
+async function finishMatchRecord(room, winner) {
+  if (!db || !room?.matchId || room.resultSaved) return;
+  room.resultSaved = true;
+  const result = winner === 'X' ? 'X' : winner === 'O' ? 'O' : 'draw';
+  await db.execute('UPDATE matches SET winner = ?, status = \'finished\', finished_at = CURRENT_TIMESTAMP WHERE id = ?', [result, room.matchId]);
+  const deltas = result === 'draw' ? [3, 3] : [result === 'X' ? 24 : -18, result === 'O' ? 24 : -18];
+  for (let index = 0; index < room.players.length; index += 1) {
+    const user = users.get(room.players[index]);
+    if (!user?.dbId) continue;
+    const won = deltas[index] > 0;
+    const draw = result === 'draw';
+    await db.execute(`UPDATE players SET rating = GREATEST(800, rating + ?), games_played = games_played + 1, wins = wins + ?, losses = losses + ?, draws = draws + ? WHERE id = ?`, [deltas[index], won && !draw ? 1 : 0, !won && !draw ? 1 : 0, draw ? 1 : 0, user.dbId]);
+  }
 }
 
 function leaveRoom(socketId, notify = true) {
@@ -105,6 +168,8 @@ io.on('connection', socket => {
     if (!user) return;
     user.name = String(profile?.name || 'Игрок').slice(0, 24);
     ratings.set(socket.id, Math.max(800, Number(profile?.rating) || ratings.get(socket.id) || 1200));
+    user.externalId = String(profile?.playerId || socket.id).slice(0, 128);
+    ensurePlayer(user.externalId, user.name, ratings.get(socket.id)).then(player => { if (player) user.dbId = player.id; }).catch(error => console.warn('Could not save player:', error.message));
     broadcastUsers();
     broadcastRoom(roomFor(socket.id));
   });
@@ -125,13 +190,14 @@ io.on('connection', socket => {
 
   socket.on('join_game', code => joinRoom(socket, code));
 
-  socket.on('player_ready', payload => {
+  socket.on('player_ready', async payload => {
     const user = users.get(socket.id);
     const room = roomFor(socket.id);
     if (!user || !room) return;
     user.ready = Boolean(payload?.ready);
     if (room.players.length === 2 && room.players.every(playerId => users.get(playerId)?.ready)) {
       room.started = true;
+      try { await startMatchRecord(room); } catch (error) { console.warn('Could not create match record:', error.message); }
       room.players.forEach(playerId => io.to(playerId).emit('match_started', { code: room.code }));
     }
     broadcastRoom(room);
@@ -142,6 +208,7 @@ io.on('connection', socket => {
     if (!room || room.players.length !== 2 || !room.started) return socket.emit('room_error', { message: 'Оба игрока должны быть готовы.' });
     const opponentId = room.players.find(playerId => playerId !== socket.id);
     if (opponentId) io.to(opponentId).emit('opponent_move', data);
+    saveMove(room, socket.id, data).catch(error => console.warn('Could not save move:', error.message));
   });
 
   socket.on('game_result', payload => {
@@ -155,18 +222,24 @@ io.on('connection', socket => {
       io.to(playerId).emit('rating_update', { rating: ratings.get(playerId), delta });
     });
     room.started = false;
+    finishMatchRecord(room, payload?.winner).catch(error => console.warn('Could not save match result:', error.message));
     broadcastRoom(room);
   });
 
   socket.on('chat message', payload => {
     const user = users.get(socket.id);
     const room = user?.room;
-    if (!room) return socket.emit('room_error', { message: 'Сначала войдите в комнату.' });
+    const scope = payload?.scope === 'global' ? 'global' : 'room';
+    if (scope === 'room' && !room) return socket.emit('room_error', { message: 'Сначала войдите в комнату.' });
     const text = String(payload?.text || payload?.message || payload || '').trim().slice(0, 240);
     if (!text) return;
-    io.to(room).emit('chat message', { id: socket.id, name: user.name || 'Игрок', text, at: Date.now() });
+    const message = { id: socket.id, name: user.name || 'Игрок', scope, room: scope === 'room' ? room : null, text, at: Date.now() };
+    if (scope === 'global') io.emit('chat message', message);
+    else io.to(room).emit('chat message', message);
+    saveChatMessage(user, scope, room, text).catch(error => console.warn('Could not save chat message:', error.message));
   });
   socket.on('disconnect', () => { leaveRoom(socket.id); users.delete(socket.id); ratings.delete(socket.id); broadcastUsers(); });
 });
 
+initializeDatabase().catch(error => console.warn('Database initialization failed:', error.message));
 baseServer.listen(port, () => console.log(`${hasCertificate ? 'HTTPS' : 'HTTP'} Gridbound server listening on ${port}`));
