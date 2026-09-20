@@ -332,15 +332,17 @@ io.on('connection', socket => {
     broadcastUsers();
   });
   socket.on('game_invite_accept', async roomCode => {
-    const room = rooms.get(String(roomCode || '').toUpperCase());
-    if (!room) return socket.emit('social_error', { message: 'Комната приглашения уже закрыта.' });
-    const user = users.get(socket.id); const joinedRoom = joinRoom(socket, room.code); user.ready = true;
-    if (db && user.dbId) await db.execute(`UPDATE game_invites SET status = 'accepted', responded_at = CURRENT_TIMESTAMP WHERE recipient_id = ? AND room_code = ? AND status = 'pending'`, [user.dbId, room.code]);
+    const normalizedRoomCode = String(roomCode || '').toUpperCase();
+    const user = users.get(socket.id);
+    if (db && user?.dbId) await db.execute(`UPDATE game_invites SET status = 'accepted', responded_at = CURRENT_TIMESTAMP WHERE recipient_id = ? AND room_code = ? AND status = 'pending'`, [user.dbId, normalizedRoomCode]);
+    const room = rooms.get(normalizedRoomCode);
+    if (!room) return socket.emit('social_notice', { message: 'Приглашение принято, но комната уже закрыта.' });
+    const joinedRoom = joinRoom(socket, room.code); user.ready = true;
     socket.emit('game_invite_accepted', { room: joinedRoom.code });
     if (joinedRoom.players.length === 2 && joinedRoom.players.every(playerId => users.get(playerId)?.ready)) { joinedRoom.started = true; try { await startMatchRecord(joinedRoom); } catch (error) { console.warn('Could not create match record:', error.message); } joinedRoom.players.forEach((playerId, index) => io.to(playerId).emit('match_started', { code: joinedRoom.code, side: index === 0 ? 'X' : 'O' })); }
     broadcastRoom(joinedRoom);
   });
-  socket.on('game_invite_decline', async roomCode => { const user = users.get(socket.id); const room = rooms.get(String(roomCode || '').toUpperCase()); const senderId = room?.players?.[0]; const sender = users.get(senderId); if (db && user?.dbId && sender?.dbId) await db.execute(`UPDATE game_invites SET status = 'declined', responded_at = CURRENT_TIMESTAMP WHERE recipient_id = ? AND room_code = ? AND status = 'pending'`, [user.dbId, room.code]); if (senderId) io.to(senderId).emit('social_notice', { message: `${user?.name || 'Игрок'} отклонил приглашение.` }); });
+  socket.on('game_invite_decline', async roomCode => { const user = users.get(socket.id); const normalizedRoomCode = String(roomCode || '').toUpperCase(); const room = rooms.get(normalizedRoomCode); const senderId = room?.players?.[0]; const sender = users.get(senderId); if (db && user?.dbId) await db.execute(`UPDATE game_invites SET status = 'declined', responded_at = CURRENT_TIMESTAMP WHERE recipient_id = ? AND room_code = ? AND status = 'pending'`, [user.dbId, normalizedRoomCode]); if (senderId) io.to(senderId).emit('social_notice', { message: `${user?.name || 'Игрок'} отклонил приглашение.` }); });
   socket.on('disconnect', () => { leaveRoom(socket.id); users.delete(socket.id); ratings.delete(socket.id); broadcastUsers(); });
 });
 
